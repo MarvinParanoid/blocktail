@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}blocktail · lab{% endblock %}
+
+{% block content %}
+<div class="scrim" onclick="closeScopeSheet()" hidden></div>
+
+<div class="app lab">
+  <header class="topbar">
+    <h1 class="brand" title="tail -f for your wallets">blocktail<span class="caret" aria-hidden="true">_</span></h1>
+    {% include "_status.html" %}
+  </header>
+
+  {% include "_summary.html" %}
+
+  <section class="activity">
+   <div class="pane">
+    <div class="pane__head">
+    <div class="activity__head">
+      <h2 class="activity__title">Activity</h2>
+      <span class="activity__count num" id="activity-count">
+        {{ '{:,}'.format(total) }} transaction{{ '' if total == 1 else 's' }}
+      </span>
+    </div>
+
+    {% include "_scope_tabs.html" %}
+
+    <form id="filters" class="filters"
+          hx-get="/activity" hx-target="#feed-body" hx-swap="innerHTML"
+          hx-trigger="change, keyup changed delay:300ms from:#search, refreshFeed from:body"
+          hx-indicator="#topline" hx-on::after-request="onFiltered(event)"
+          onsubmit="return false">
+      <input type="hidden" name="wallet" id="wallet-value" value="{{ filters.account_id or '' }}">
+      <input type="hidden" name="scope" id="scope-value" value="{{ filters.scope.value }}">
+
+      <fieldset class="field field--dir">
+        <div class="segmented">
+          {% for value, text in [('all', 'ALL'), ('in', 'IN'), ('out', 'OUT')] %}
+            <label class="segment segment--{{ value }}">
+              <input type="radio" name="direction" value="{{ value }}"
+                     {% if filters.direction.value == value %}checked{% endif %}>
+              <span>{{ text }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      <label class="field">
+        <select name="asset" aria-label="Asset">
+          <option value="">All assets</option>
+          {% for asset in assets[0] %}
+            <option value="{{ asset['id'] }}" {% if filters.asset_id == asset['id'] %}selected{% endif %}>
+              {{ asset['symbol'] }}
+            </option>
+          {% endfor %}
+          {% if assets[1] %}
+            {# Kept selectable — this is a monitor — but not mixed in with the
+               assets you actually use. #}
+            <optgroup label="Unrecognised ({{ assets[1] | length }})">
+              {% for asset in assets[1] %}
+                <option value="{{ asset['id'] }}" {% if filters.asset_id == asset['id'] %}selected{% endif %}>
+                  {{ asset['symbol'] }}
+                </option>
+              {% endfor %}
+            </optgroup>
+          {% endif %}
+        </select>
+      </label>
+
+      <label class="field field--search">
+        <input type="search" name="q" id="search" value="{{ filters.search }}"
+               placeholder="address, tx hash or label" autocomplete="off" spellcheck="false"
+               aria-label="Search">
+      </label>
+
+    </form>
+    {% if dust_hidden or filters.show_dust %}
+      {# Never silently absent: this is a monitor, and a hidden event still
+         happened. #}
+      <p class="dust-note">
+        {% if filters.show_dust %}
+          Showing transfers worth under a cent.
+          <button type="button" class="linkish" onclick="toggleDust(false)">Hide them</button>
+        {% else %}
+          {{ '{:,}'.format(dust_hidden) }} dust transfer{{ '' if dust_hidden == 1 else 's' }} hidden
+          <button type="button" class="linkish" onclick="toggleDust(true)">Show</button>
+        {% endif %}
+      </p>
+    {% endif %}
+    </div>
+
+      <div class="table-scroll">
+        <table class="feed">
+          <thead>
+            <tr>
+              <th class="cell-time">Time</th>
+              <th class="cell-wallet">Wallet</th>
+              <th class="cell-dir">Dir</th>
+              <th class="cell-value">Amount</th>
+              <th class="cell-party">Counterparty</th>
+              <th class="cell-tx">Transaction</th>
+              <th class="cell-fill"></th>
+            </tr>
+          </thead>
+          <tbody id="feed-body">
+            {% include "_rows.html" %}
+          </tbody>
+        </table>
+      </div>
+   </div>
+  </section>
+</div>
+
+{# The wallet list keeps its management affordances; it just opens on demand. #}
+<aside class="sidebar" id="sidebar">
+  {% include "_wallets.html" %}
+</aside>
+
+<dialog id="wallet-dialog" class="sheet" aria-label="Wallet">
+  <div id="wallet-dialog-body"></div>
+</dialog>
+
+<dialog id="activity-sheet" class="sheet" aria-label="Activity">
+  <div id="activity-sheet-body"></div>
+</dialog>
+
+{% include "_behaviour.html" %}
+{% endblock %}

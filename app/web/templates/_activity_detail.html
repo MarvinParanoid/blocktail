@@ -1,0 +1,53 @@
+<div class="detail">
+  <h2 class="sheet__title">
+    {% if activity.direction == 'in' %}Received
+    {% elif activity.direction == 'out' %}Sent
+    {% else %}Between your wallets{% endif %}
+  </h2>
+
+  <p class="detail__amount">
+    <span class="amount">{{ activity.amount_text }}</span>
+    <span class="sym">{{ activity.symbol }}</span>
+    {% if activity.value_text %}<span class="fiat">{{ activity.value_text }}</span>{% endif %}
+  </p>
+
+  <dl class="detail__list">
+    <dt>From</dt>
+    <dd>
+      <a href="{{ activity.source.url }}" target="_blank" rel="noopener noreferrer">{{ activity.source.display }}</a>
+      <span class="detail__mono">{{ activity.source.title }}</span>
+    </dd>
+
+    <dt>To</dt>
+    <dd>
+      {% if activity.target.address %}
+        <a href="{{ activity.target.url }}" target="_blank" rel="noopener noreferrer">{{ activity.target.display }}</a>
+        <span class="detail__mono">{{ activity.target.title }}</span>
+      {% else %}
+        <span class="muted">{{ activity.target.display }}</span>
+      {% endif %}
+    </dd>
+
+    <dt>When</dt>
+    <dd>{{ activity.day_text }}, {{ activity.time_text }}<span class="detail__mono">{{ activity.iso }}</span></dd>
+
+    <dt>Type</dt>
+    <dd>{{ activity.kind }} transfer</dd>
+
+    <dt>Transaction</dt>
+    <dd>
+      <a href="{{ activity.tx_url }}" target="_blank" rel="noopener noreferrer">Open on Etherscan</a>
+      <span class="detail__mono">{{ activity.tx_hash }}</span>
+    </dd>
+
+    <dt>Block</dt>
+    <dd>
+      <a href="{{ activity.block_url }}" target="_blank" rel="noopener noreferrer">
+        #{{ '{:,}'.format(activity.block_number) }}</a>
+    </dd>
+  </dl>
+
+  <div class="sheet__actions">
+    <button type="button" class="sheet__cancel" onclick="closeActivitySheet()">Close</button>
+  </div>
+</div>

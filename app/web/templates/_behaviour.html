@@ -1,0 +1,273 @@
+{# Shared by both layouts: the page structure differs, the behaviour does not. #}
+<script>
+  const filters = document.getElementById('filters');
+
+  // The top bar and the filter bar are both sticky, and the table head sticks
+  // below them. Their heights depend on font metrics and on whether the bars
+  // wrap, so they are measured rather than assumed — a stale guess leaves a gap
+  // that feed rows scroll through, and buries the table head.
+  (function trackChromeHeight() {
+    const topbar = document.querySelector('.topbar');
+    const root = document.documentElement;
+    if (!topbar || !filters) return;
+    const measure = () => {
+      const top = topbar.getBoundingClientRect().height;
+      root.style.setProperty('--topbar-h', top + 'px');
+      root.style.setProperty('--chrome-h', (top + filters.getBoundingClientRect().height) + 'px');
+    };
+    measure();
+    if (window.ResizeObserver) {
+      const observer = new ResizeObserver(measure);
+      observer.observe(topbar);
+      observer.observe(filters);
+    }
+    window.addEventListener('resize', measure);
+  })();
+
+  // Keep the address bar in step with the filters without spamming history.
+  function syncUrl() {
+    const params = new URLSearchParams(new FormData(filters));
+    for (const [key, value] of [...params]) if (!value || value === 'all') params.delete(key);
+    const query = params.toString();
+    history.replaceState(null, '', query ? '?' + query : location.pathname);
+  }
+
+  // Mark the controls that are currently narrowing the feed, so a filter set
+  // from the summary or the sidebar is visible where it is cleared.
+  function syncActiveFilters() {
+    for (const field of filters.querySelectorAll('.field')) {
+      const control = field.querySelector('select, input[type="search"]');
+      field.classList.toggle('is-active', !!(control && control.value));
+    }
+    const direction = filters.querySelector('input[name="direction"]:checked');
+    const segment = filters.querySelector('.field--dir');
+    if (segment) segment.classList.toggle('is-active', !!direction && direction.value !== 'all');
+  }
+
+  function afterFilterChange() {
+    document.body.dataset.paged = '';
+    syncActiveFilters();
+    setTimeout(() => { syncUrl(); document.body.dispatchEvent(new Event('refreshWallets')); }, 0);
+  }
+
+  syncActiveFilters();
+
+  // A narrow screen is not a small desktop: it has no sidebar, its feed rows
+  // are a log rather than a table, and rows open their technical detail.
+  const NARROW = window.matchMedia('(max-width: 860px)');
+  function isNarrow() { return NARROW.matches; }
+
+  function openScopeSheet() {
+    document.documentElement.classList.add('scope-open');
+    document.querySelector('.scrim').hidden = false;
+  }
+  function closeScopeSheet() {
+    document.documentElement.classList.remove('scope-open');
+    document.querySelector('.scrim').hidden = true;
+  }
+
+  const activitySheet = document.getElementById('activity-sheet');
+  function openActivitySheet() { if (!activitySheet.open) activitySheet.showModal(); }
+  function closeActivitySheet() { activitySheet.close(); }
+
+  document.addEventListener('keydown', (evt) => {
+    if (evt.key === 'Escape') closeScopeSheet();
+  });
+
+  // --- wallet dialog -----------------------------------------------------
+  const walletDialog = document.getElementById('wallet-dialog');
+
+  function openWalletDialog(id) {
+    // The form is rendered server-side so the dialog itself holds no state.
+    htmx.ajax('GET', '/wallets/form' + (id ? '?id=' + id : ''),
+              { target: '#wallet-dialog-body', swap: 'innerHTML' })
+      .then(() => {
+        document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));
+        if (!walletDialog.open) walletDialog.showModal();
+      });
+  }
+
+  function closeWalletDialog() {
+    walletDialog.close();
+  }
+
+  // The server signals a successful change; nothing needs to parse the response.
+  document.body.addEventListener('wallet-changed', () => {
+    walletDialog.close();
+    document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));
+  });
+
+  // navigator.clipboard needs a secure context. Over plain HTTP it simply is
+  // not there, so the fallback puts the whole address on screen to be selected
+  // by hand rather than failing silently.
+  async function copyAddress(address, button) {
+    const original = button.textContent;
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(address);
+      copied = true;
+    } catch (e) {
+      copied = false;
+    }
+    button.textContent = copied ? 'Copied' : address;
+    button.classList.toggle('is-copied', copied);
+    setTimeout(() => {
+      button.textContent = original;
+      button.classList.remove('is-copied');
+    }, copied ? 1200 : 4000);
+  }
+
+  // Close an open actions menu when the click lands elsewhere.
+  document.addEventListener('click', (evt) => {
+    for (const menu of document.querySelectorAll('.wallet__menu[open]')) {
+      if (!menu.contains(evt.target)) menu.open = false;
+    }
+  });
+
+  // A timed sidebar refresh must not yank an open menu away mid-click.
+  document.body.addEventListener('htmx:beforeRequest', (evt) => {
+    const trigger = evt.detail.requestConfig && evt.detail.requestConfig.triggeringEvent;
+    if (evt.detail.elt && evt.detail.elt.id === 'wallets'
+        && document.querySelector('.wallet__menu[open]')
+        && (!trigger || trigger.type !== 'wallet-changed')) {
+      evt.preventDefault();
+    }
+  });
+
+  // Holdings panel: collapsed state lives on <html> so it survives every
+  // fragment swap, and in localStorage so it survives a reload.
+  function toggleSummary() {
+    const collapsed = document.documentElement.classList.toggle('summary-collapsed');
+    try { localStorage.setItem('blocktail.summary.collapsed', collapsed ? '1' : '0'); } catch (e) {}
+  }
+
+  // Revealing dust is a view preference, so it lives on <html> and survives
+  // every fragment swap, like the summary's collapsed state.
+  function toggleHiddenTokens() {
+    const shown = document.documentElement.classList.toggle('show-hidden-tokens');
+    try { localStorage.setItem('blocktail.tokens.showHidden', shown ? '1' : '0'); } catch (e) {}
+  }
+
+  // Dust is a real filter, not a view preference: it changes what the server
+  // sends, so it lives in the form like the others.
+  function toggleDust(show) {
+    let field = filters.querySelector('input[name="dust"]');
+    if (!field) {
+      field = document.createElement('input');
+      field.type = 'hidden';
+      field.name = 'dust';
+      filters.appendChild(field);
+    }
+    field.value = show ? 'show' : '';
+    document.body.dataset.paged = '';
+    htmx.trigger(filters, 'change');
+  }
+
+  function filterByAsset(id) {
+    const asset = filters.querySelector('select[name="asset"]');
+    if (asset) asset.value = id;
+    afterFilterChange();
+  }
+
+  // The sidebar is the scope control; these carry its choice into the form.
+  function selectWallet(id) {
+    document.getElementById('wallet-value').value = id;
+    document.getElementById('scope-value').value = 'all';
+    closeScopeSheet();
+    afterFilterChange();
+  }
+
+  function selectScope(scope) {
+    document.getElementById('wallet-value').value = '';
+    document.getElementById('scope-value').value = scope;
+    closeScopeSheet();
+    afterFilterChange();
+  }
+
+  // Clicking a counterparty asks "what have my wallets ever done with this
+  // address?", so every other filter gets out of the way.
+  function filterByAddress(address) {
+    document.getElementById('wallet-value').value = '';
+    document.getElementById('scope-value').value = 'all';
+    document.getElementById('search').value = address;
+    const asset = filters.querySelector('select[name="asset"]');
+    if (asset) asset.value = '';
+    const all = filters.querySelector('.segment--all input');
+    if (all) all.checked = true;
+    afterFilterChange();
+  }
+
+  function onFiltered(evt) {
+    syncUrl();
+    syncActiveFilters();
+    const trigger = evt.detail.requestConfig && evt.detail.requestConfig.triggeringEvent;
+    if (!trigger || trigger.type !== 'refreshFeed') {
+      document.body.dispatchEvent(new Event('refreshWallets'));
+    }
+  }
+
+  syncActiveFilters();
+
+  // --- new-row highlight -------------------------------------------------
+  // Rows that appear on an automatic refresh glow briefly and settle, the way a
+  // new line lands in `tail -f`. Only auto-refresh qualifies: paging back and
+  // changing a filter also bring in unseen rows, but those are not news.
+  //
+  // Every decision here is read off the event being handled. A shared "is this
+  // an auto-refresh?" flag looks simpler and is wrong: the status bar polls on
+  // its own timer, and its request lands between this one's send and swap,
+  // resetting the flag before the rows arrive.
+  const rowsBeforeSwap = new WeakMap();
+
+  function isAutoRefresh(config) {
+    const trigger = config && config.triggeringEvent;
+    return !!(trigger && trigger.type === 'refreshFeed');
+  }
+
+  document.body.addEventListener('htmx:configRequest', (evt) => {
+    const source = evt.detail.elt;
+    if (source && source.id !== 'feed-more' && !isAutoRefresh(evt.detail)) {
+      document.body.dataset.paged = '';
+    }
+  });
+
+  // htmx discards 4xx responses by default. A rejected wallet form *is* the
+  // response we want to render — that is where the reason for the rejection is.
+  document.body.addEventListener('htmx:beforeSwap', (evt) => {
+    if (evt.detail.xhr && [403, 404, 422].includes(evt.detail.xhr.status)) {
+      evt.detail.shouldSwap = true;
+      evt.detail.isError = false;
+    }
+  });
+
+  document.body.addEventListener('htmx:beforeSwap', (evt) => {
+    const target = evt.detail.target;
+    if (!target || target.id !== 'feed-body') return;
+    rowsBeforeSwap.set(target, new Set([...target.querySelectorAll('tr[data-activity]')]
+      .map((row) => row.dataset.activity)));
+  });
+
+  document.body.addEventListener('htmx:afterSwap', (evt) => {
+    const target = evt.detail.target;
+    if (!target || target.id !== 'feed-body') return;
+    const seen = rowsBeforeSwap.get(target);
+    rowsBeforeSwap.delete(target);
+    if (!seen || !isAutoRefresh(evt.detail.requestConfig)) return;
+    for (const row of target.querySelectorAll('tr[data-activity]')) {
+      if (seen.has(row.dataset.activity)) continue;
+      row.classList.add('row--new');
+      setTimeout(() => row.classList.remove('row--new'), 4500);
+    }
+  });
+
+  // Refresh the newest page periodically, but never yank the view out from
+  // under someone who has scrolled into history or paged further back.
+  setInterval(() => {
+    if (document.hidden) return;
+    if (document.body.dataset.paged === '1') return;
+    const scroller = document.querySelector('.table-scroll');
+    const offset = scroller && scroller.scrollTop ? scroller.scrollTop : window.scrollY;
+    if (offset > 300) return;
+    document.body.dispatchEvent(new Event('refreshFeed'));
+  }, 15000);
+</script>

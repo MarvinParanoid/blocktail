@@ -1,0 +1,91 @@
+{% set ns = namespace(day=previous_day) %}
+{% for activity in activities %}
+  {% if activity.day_key != ns.day %}
+    {% set ns.day = activity.day_key %}
+    <tr class="row row--day"><td colspan="7"><span class="day">{{ activity.day_text }}</span></td></tr>
+  {% endif %}
+
+  {% set own = activity.direction in ('between', 'self') %}
+  <tr class="row row--{{ activity.direction }}" data-activity="{{ activity.id }}"
+      hx-get="/activity/{{ activity.id }}" hx-target="#activity-sheet-body" hx-swap="innerHTML"
+      hx-trigger="click[isNarrow()]" hx-on::after-request="openActivitySheet()">
+    <td class="cell-time"><span class="time" title="{{ activity.iso }}">{{ activity.time_text }}</span></td>
+
+    {# An own transfer has no counterparty, so it spends the direction column on
+       naming both sides instead. #}
+    <td class="cell-wallet"{% if own %} colspan="2"{% endif %}>
+      {% if own %}
+        <span class="pair">{{ activity.source.display }}<span class="arrow">&rarr;</span>{{ activity.target.display }}</span>
+      {% else %}
+        {{ activity.wallet }}
+      {% endif %}
+    </td>
+
+    {% if not own %}
+      <td class="cell-dir">
+        {% if activity.direction == 'in' %}<span class="dir dir--in">IN</span>
+        {% else %}<span class="dir dir--out">OUT</span>{% endif %}
+      </td>
+    {% endif %}
+
+    <td class="cell-value">
+      <span class="amount">{{ activity.amount_text }}</span
+      >{% if activity.asset_url %}<a class="sym" href="{{ activity.asset_url }}" target="_blank" rel="noopener noreferrer">{{ activity.symbol }}</a>{% else %}<span class="sym">{{ activity.symbol }}</span>{% endif -%}
+      {%- if activity.kind_badge %}<span class="kind" title="Internal transfer — value moved by contract execution">{{ activity.kind_badge }}</span>{% endif %}
+      {%- if activity.value_text %}<span class="fiat">{{ activity.value_text }}</span>{% endif %}
+    </td>
+
+    <td class="cell-party">
+      {% if activity.counterparty and activity.counterparty.address %}
+        {% set party = activity.counterparty %}
+        <span class="party">
+          {# Clicking a counterparty shows every dealing your wallets have had
+             with it. The explorer is one deliberate click further out. #}
+          <a class="{{ 'label' if party.is_labelled else 'addr' }}" href="?q={{ party.address }}"
+             hx-get="/activity?q={{ party.address }}" hx-target="#feed-body" hx-swap="innerHTML"
+             hx-on:click="event.stopPropagation(); filterByAddress('{{ party.address }}')"
+             title="Show all activity with {{ party.title }}">{{ party.display }}</a>
+          {%- if party.is_labelled %}<span class="party__addr">{{ party.short }}</span>{% endif %}
+          <a class="ext" href="{{ party.url }}" target="_blank" rel="noopener noreferrer"
+             title="Open {{ party.title }} on Etherscan" aria-label="Open on Etherscan">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M6.4 1.1h2.5v2.5M8.9 1.1 4.7 5.3M7.3 6.1v2.3a.5.5 0 0 1-.5.5H1.6a.5.5 0 0 1-.5-.5V3.2a.5.5 0 0 1 .5-.5h2.3"/></svg>
+          </a>
+        </span>
+      {% elif activity.counterparty %}
+        <span class="muted">{{ activity.counterparty.display }}</span>
+      {% endif %}
+    </td>
+
+    <td class="cell-tx">
+      <a class="hash" href="{{ activity.tx_url }}" target="_blank" rel="noopener noreferrer"
+         title="{{ activity.tx_hash }} — block {{ '{:,}'.format(activity.block_number) }}"
+         >{{ activity.tx_short }}</a>
+    </td>
+
+    <td class="cell-fill"></td>
+  </tr>
+{% else %}
+  {% if not is_page %}
+    <tr class="row row--empty">
+      <td colspan="7">
+        {% if filters.is_active %}
+          No activity matches these filters.
+        {% else %}
+          No activity indexed yet. If the app just started, the first sync is still running.
+        {% endif %}
+      </td>
+    </tr>
+  {% endif %}
+{% endfor %}
+
+{% if next_cursor %}
+  <tr class="row row--more" id="feed-more"
+      hx-get="/activity?{% if filters.query_string %}{{ filters.query_string }}&{% endif %}before={{ next_cursor }}&after_day={{ ns.day }}"
+      {# `revealed` measures against the window, and on a wide screen the log is
+         its own scroll region — so the sentinel would never be seen. `intersect`
+         observes properly wherever it lives. #}
+      hx-trigger="intersect once" hx-swap="outerHTML"
+      hx-on::after-request="document.body.dataset.paged = '1'">
+    <td colspan="7" class="muted">loading more&hellip;</td>
+  </tr>
+{% endif %}

@@ -1,0 +1,117 @@
+<section id="summary" class="summary-panel"
+         hx-get="/summary" hx-trigger="every 30s, refreshWallets from:body, wallet-changed from:body"
+         hx-include="#wallet-value, #scope-value" hx-swap="outerHTML">
+
+  {# The address and the badge are siblings of the toggle, not children of it:
+     a button inside a button is invalid HTML, and the parser closes the outer
+     one early — which threw the address onto its own line. #}
+  <div class="summary__head">
+    <button type="button" class="summary__toggle" onclick="toggleSummary()"
+            aria-controls="summary-body" aria-label="Show or hide holdings">
+      <span class="summary__chevron" aria-hidden="true"></span>
+      <span class="summary__scope">{{ portfolio.scope }}</span>
+      {% if portfolio.scope_count %}<span class="summary__count">{{ portfolio.scope_count }}</span>{% endif %}
+      <span class="summary__total num">{{ portfolio.total_text or '—' }}</span>
+      <span class="summary__brief">
+        <span class="num">{{ portfolio.native_amount_text }}</span> {{ portfolio.native_symbol }}
+        {%- if portfolio.token_count %}
+          <span class="sep">&middot;</span>
+          {{ portfolio.token_count }} token{{ '' if portfolio.token_count == 1 else 's' }}
+        {%- endif %}
+      </span>
+    </button>
+
+    {% if portfolio.scope_meta %}
+      {# Shortened for reading, whole on the clipboard. #}
+      <button type="button" class="summary__addr" data-address="{{ portfolio.scope_address }}"
+              onclick="copyAddress('{{ portfolio.scope_address }}', this)"
+              title="{{ portfolio.scope_address }} — click to copy">{{ portfolio.scope_meta }}</button>
+    {% endif %}
+    {% if portfolio.scope_badge %}<span class="summary__badge">{{ portfolio.scope_badge }}</span>{% endif %}
+  </div>
+
+  {# Narrow screens have no sidebar; this is how the scope is chosen there. #}
+  <button type="button" class="scope-trigger" onclick="openScopeSheet()">
+    <span>{{ scope_label }}</span>
+    <span class="scope-trigger__caret" aria-hidden="true">&#9662;</span>
+  </button>
+
+  <div class="summary__body" id="summary-body">
+    <div class="summary__figures">
+      <div class="figure">
+        <span class="figure__label">Total value</span>
+        <span class="figure__main num">{{ portfolio.total_text or '—' }}</span>
+        {% if not portfolio.priced %}
+          <span class="figure__note warn">
+            {% if prices_on %}no valuation yet{% else %}valuation off{% endif %}
+          </span>
+        {% elif portfolio.excluded %}
+          <span class="figure__note warn"
+                title="This asset alone would be almost the whole total — usually a scam token with a nominal quote and an absurd supply. Add its contract to ignore_assets, or raise VALUE_MAX_SHARE_PERCENT.">
+            {{ portfolio.excluded | join(', ') }} excluded
+          </span>
+        {% elif portfolio.hidden or portfolio.unpriced %}
+          {# Two different situations, and conflating them read as "the price
+             feed is broken": dust nobody asked for, versus a real holding whose
+             price could not be found. #}
+          <span class="figure__note">
+            {% if portfolio.hidden %}
+              <button type="button" class="linkish" onclick="toggleHiddenTokens()"
+                      title="Kept and indexed, just not shown: no value, not a token this chain is known for, and never sent by your own wallets.">
+                {{ portfolio.hidden }} token{{ '' if portfolio.hidden == 1 else 's' }} hidden
+              </button>
+            {% endif %}
+            {%- if portfolio.hidden and portfolio.unpriced %}<span class="sep">&middot;</span>{% endif %}
+            {%- if portfolio.unpriced %} {{ portfolio.unpriced }} unpriced{% endif %}
+          </span>
+        {% endif %}
+      </div>
+
+      <div class="figure">
+        <span class="figure__label">Native</span>
+        <span class="figure__main num">{{ portfolio.native_amount_text }}
+          <span class="figure__unit">{{ portfolio.native_symbol }}</span></span>
+        {% if portfolio.native_value_text %}
+          <span class="figure__note num">{{ portfolio.native_value_text }}</span>
+        {% endif %}
+      </div>
+
+      <div class="figure">
+        <span class="figure__label">Tokens</span>
+        <span class="figure__main num">{{ portfolio.token_value_text or '—' }}</span>
+        <span class="figure__note">
+          {{ portfolio.token_count }} token{{ '' if portfolio.token_count == 1 else 's' }}
+        </span>
+      </div>
+    </div>
+
+    {% if portfolio.assets %}
+      <div class="holdings-row">
+        <ul class="holdings">
+          {% for asset in portfolio.assets %}
+            <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--excluded' if asset.excluded }}{{ ' holding--hidden' if asset.hidden }}">
+              <a class="holding__hit" href="?asset={{ asset.asset_id }}"
+                 hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
+                 hx-include="#wallet-value, #scope-value" hx-on:click="filterByAsset('{{ asset.asset_id }}')"
+                 title="{{ asset.amount_text }} {{ asset.symbol }}{% if asset.value_text %} · {{ asset.value_text }}{% endif %} — filter the feed to it">
+                <span class="holding__sym">{{ asset.symbol }}</span>
+                <span class="holding__amount num">{{ asset.amount_text }}</span>
+                <span class="holding__value num">{{ asset.value_text or '' }}</span>
+              </a>
+            </li>
+          {% endfor %}
+          {% if portfolio.hidden_assets %}
+            <li class="holding holding--more">+{{ portfolio.hidden_assets }} more</li>
+          {% endif %}
+        </ul>
+
+        {# Price freshness is a footnote on the valuation, not a fourth metric. #}
+        {% if portfolio.price_age_text %}
+          <span class="holdings__age{{ ' is-stale' if portfolio.prices_stale }}">
+            prices <span class="sep">&middot;</span> {{ portfolio.price_age_text.replace(' ago', '') }}
+          </span>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+</section>

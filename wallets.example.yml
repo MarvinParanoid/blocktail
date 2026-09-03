@@ -1,0 +1,40 @@
+# Copy to wallets.yml. This file holds the addresses you monitor, so it is
+# gitignored by default.
+#
+# `chain` is optional and defaults to ethereum, which is the only chain this
+# build accepts. It is part of the schema so that adding a chain later does not
+# invalidate your config.
+
+chain: ethereum
+
+wallets:
+  - name: Main
+    chain: ethereum
+    address: "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
+
+  - name: Cold
+    address: "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
+
+  - name: Payments
+    address: "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB"
+
+  # `owned: false` means "watch this, it is not mine". It is indexed, browsable
+  # and has its own wallet view, but it never counts towards your totals.
+  # Quote a name containing '#', or YAML reads the rest of the line as a comment.
+  - name: "Whale #1"
+    address: "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
+    owned: false
+
+# Optional. Names for external addresses you recognise. The underlying address
+# stays visible on hover and links to the explorer.
+labels:
+  "0x28C6c06298d514Db089934071355E5743bf21d60": "Binance"
+  "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb": "My Ledger"
+
+# Optional. Contracts to keep out of the feed and the balance list — useful for
+# airdropped spam tokens.
+ignore_assets: []
+
+# Optional. Contracts to always show, even when they are worth nothing and the
+# app has never heard of them. The manual override for the token no rule catches.
+trusted_assets: []

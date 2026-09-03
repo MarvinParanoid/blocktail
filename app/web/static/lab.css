@@ -1,0 +1,222 @@
+/* Experimental composition, layered over the current one.
+ *
+ * The hypothesis: blocktail's problem stopped being width a while ago. Every
+ * band — summary, balances, sidebar, filters, header, day markers, rows — has
+ * roughly the same weight, so the page reads as one matrix of small text. What
+ * Etherscan does well is not density but layering: overview, then space, then a
+ * toolbar, then a bounded data region, with a real contrast ladder inside a row.
+ */
+
+@import url("/static/app.css");
+
+:root {
+  /* Three deliberate levels, further apart than before. */
+  --primary:   #f2f6fa;
+  --secondary: #9aa7b4;
+  --tertiary:  #5c6772;
+}
+
+body { font-size: 13px; }
+
+/* --------------------------------------------------------------- container */
+
+@media (min-width: 861px) {
+  .app.lab { width: min(100% - 48px, 1540px); }
+  /* No standing sidebar: the activity area becomes a rectangle, not an L. */
+  .lab ~ .sidebar { display: none; }
+}
+
+/* ------------------------------------------------------------- top of page */
+
+.lab .topbar { padding: 13px 4px; border-bottom: 1px solid var(--border); }
+.lab .brand { font-size: 15px; }
+
+.lab .summary-panel { border-bottom: 0; }
+.lab .summary__head { padding: 14px 4px 4px; }
+.lab .summary__toggle { padding: 0; }
+.lab .summary__scope { font-size: 11px; color: var(--secondary); }
+/* The summary is an overview, not a 1500px-wide table. Holding it to a column
+   stops it imitating the feed underneath it. */
+.lab .summary__body { padding: 0 4px; max-width: 880px; }
+.lab .summary__figures { gap: 6px 52px; padding-bottom: 12px; }
+.lab .figure__main { font-size: 28px; letter-spacing: -0.01em; color: var(--primary); }
+.lab .figure__label { font-size: 10px; color: var(--tertiary); }
+.lab .figure__note { font-size: 12px; color: var(--secondary); }
+.lab .holdings-row { border-top: 0; padding-top: 0; max-width: 880px; align-items: flex-end; }
+.lab .holdings { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.lab .holding__hit { font-size: 12.5px; padding: 3px 8px 3px 0; }
+.lab .holding__sym { color: var(--secondary); }
+.lab .holding--native .holding__sym { color: var(--primary); }
+.lab .holding__amount { color: var(--primary); }
+.lab .holding__value { color: var(--tertiary); }
+.lab .holdings__age { color: var(--tertiary); }
+
+/* ------------------------------------------------------- activity as a unit */
+
+/* The breathing room between "what do I have" and "what happened" — the single
+   thing the current layout is missing most. */
+.lab .activity { padding-top: 26px; }
+
+/* One surface: the heading, the scope and the controls sit inside the same
+   border as the rows. Etherscan reads as collected largely because its controls
+   and its data are one component rather than three stacked bands. */
+.lab .pane__head { padding: 12px 14px 10px; border-bottom: 1px solid var(--border); }
+
+.lab .activity__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 0 10px;
+}
+.lab .activity__title {
+  margin: 0;
+  font: 600 11px/1 var(--sans);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--secondary);
+}
+.lab .activity__count { font-size: 12px; color: var(--tertiary); }
+
+/* Scope as tabs. Text, not pills — the terminal register stays. */
+.lab .tabs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  padding: 0 0 9px;
+  margin-bottom: 9px;
+  border-bottom: 1px solid #191f25;
+}
+.lab .tabs__label {
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+  margin-right: 8px;
+}
+.lab .tab {
+  padding: 4px 9px 5px;
+  border-bottom: 2px solid transparent;
+  color: var(--secondary);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.lab .tab:hover { color: var(--primary); text-decoration: none; }
+.lab .tab.is-selected { color: var(--primary); border-bottom-color: var(--own); }
+.lab .tab--watched { color: var(--tertiary); }
+.lab .tab--watched:hover, .lab .tab--watched.is-selected { color: var(--secondary); }
+.lab .tab--watched.is-selected { border-bottom-color: var(--muted); }
+.lab .tabs__divider {
+  width: 1px;
+  height: 14px;
+  margin: 0 8px;
+  background: var(--border-hi);
+}
+.lab .tabs__manage {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: var(--tertiary);
+  font: 12px var(--sans);
+  cursor: pointer;
+  padding: 4px 4px 5px;
+}
+.lab .tabs__manage:hover { color: var(--primary); }
+
+/* A toolbar, not a form: the DIRECTION / ASSET / SEARCH labels were another
+   layer of small technical text saying what the controls already say. */
+.lab .filters {
+  position: static;
+  gap: 10px;
+  padding: 0;
+  border-bottom: 0;
+  background: none;
+}
+.lab .field__label { display: none; }
+.lab .field { gap: 0; }
+/* Less of a box: a rule under a prompt, which sits better in this register.
+   Pushed to the right so the toolbar reads controls-then-search. */
+.lab .field--search { flex: 0 1 340px; max-width: 340px; margin-left: auto; }
+.lab input[type="search"] {
+  padding-left: 22px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%235c6772' stroke-width='1.4'%3E%3Ccircle cx='6.8' cy='6.8' r='4.3'/%3E%3Cpath d='M10.2 10.2 14 14' stroke-linecap='round'/%3E%3C/svg%3E")
+              no-repeat left center;
+  background-size: 13px 13px;
+  border: 0;
+  border-bottom: 1px solid var(--border-hi);
+  border-radius: 0;
+}
+.lab input[type="search"]:focus {
+  outline: 0;
+  border-bottom-color: var(--accent);
+}
+
+.lab .dust-note { padding: 0 0 9px; border-bottom: 0; }
+
+.lab .pane {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: #0d1015;
+}
+.lab .feed thead th {
+  position: sticky;
+  top: var(--topbar-h);
+  background: #12161b;
+  padding: 9px 14px;
+  font-size: 10px;
+  color: var(--tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------- contrast ladder */
+
+.lab .feed td { padding: 10px 14px; font-size: 13.5px; }
+.lab .row:hover td { background: #12161b; }
+
+.lab .time { font-size: 12.5px; color: var(--secondary); }        /* secondary */
+.lab .cell-wallet { color: var(--primary); }                       /* primary  */
+.lab .pair { color: var(--primary); }
+.lab .amount { font-size: 15px; font-weight: 600; color: var(--primary); }
+.lab .cell-value .sym { font-size: 12.5px; color: var(--secondary); }
+.lab .fiat { font-size: 12.5px; color: var(--secondary); }         /* secondary */
+.lab .label { color: var(--primary); border-bottom-color: var(--border-hi); }
+.lab .cell-party .addr { color: var(--text); }                    /* primary-ish */
+.lab .party__addr { font-size: 11.5px; color: var(--tertiary); }   /* tertiary */
+.lab .cell-tx .hash { font-size: 12.5px; color: var(--tertiary); } /* tertiary */
+.lab .cell-tx .hash:hover { color: var(--accent); }
+.lab .row--in .amount { color: var(--in); }
+.lab .row--out .amount { color: var(--out); }
+
+.lab .day { font-size: 10px; color: var(--tertiary); }
+.lab .row--day td { padding: 14px 14px 6px; }
+
+/* The wallet list is a sheet at every width here, not just on a phone. */
+.lab ~ .sidebar {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 60;
+  width: min(420px, 100vw);
+  margin-inline: auto;
+  max-height: 80vh;
+  overflow-y: auto;
+  border: 1px solid var(--border-hi);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: var(--panel);
+  transform: translateY(101%);
+  transition: transform 170ms ease-out;
+}
+html.scope-open .lab ~ .sidebar { display: block; transform: none; }
+html.scope-open .scrim { display: block; }
+
+@media (max-width: 860px) {
+  .lab .activity { padding-top: 14px; }
+  .lab .dust-note { padding: 0 0 9px; border-bottom: 0; }
+
+.lab .pane { border-left: 0; border-right: 0; border-radius: 0; }
+  .lab .pane__head { padding: 10px 14px 8px; }
+  .lab .tabs { overflow-x: auto; flex-wrap: nowrap; }
+  .lab .tabs__manage { margin-left: 8px; }
+  .lab ~ .sidebar { width: 100vw; }
+}

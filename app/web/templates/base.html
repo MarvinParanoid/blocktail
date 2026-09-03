@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}blocktail{% endblock %}</title>
+  <link rel="stylesheet" href="{{ stylesheet | default('/static/app.css') }}">
+  <meta name="description" content="blocktail — tail -f for your wallets. A read-only Ethereum activity monitor.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230b0d10'/><path d='M8 11l5 5-5 5' fill='none' stroke='%233ddc84' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M17 21h7' fill='none' stroke='%233ddc84' stroke-width='3' stroke-linecap='round'/></svg>">
+  <script>
+    // Applied before first paint so a collapsed panel never flashes open.
+    // A narrow screen should open on activity, not on a portfolio panel.
+    try {
+      const stored = localStorage.getItem('blocktail.summary.collapsed');
+      const collapsed = stored === null
+        ? window.matchMedia('(max-width: 860px)').matches
+        : stored === '1';
+      if (collapsed) document.documentElement.classList.add('summary-collapsed');
+      if (localStorage.getItem('blocktail.tokens.showHidden') === '1') {
+        document.documentElement.classList.add('show-hidden-tokens');
+      }
+    } catch (e) {}
+  </script>
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  {% block content %}{% endblock %}
+</body>
+</html>

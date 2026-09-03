@@ -1,0 +1,75 @@
+{% macro wallet_row(wallet) %}
+  <div class="wallet{{ ' is-selected' if wallet.selected }}">
+    <a class="wallet__hit" href="?wallet={{ wallet.id }}"
+       hx-get="/activity?wallet={{ wallet.id }}" hx-target="#feed-body" hx-swap="innerHTML"
+       hx-include="this" hx-on:click="selectWallet('{{ wallet.id }}')">
+      <span class="wallet__name">{{ wallet.name }}</span>
+      <span class="wallet__value num" title="{{ wallet.value_exact or 'no valuation' }}">
+        {{- wallet.value_text or '—' -}}
+      </span>
+    </a>
+
+    <details class="wallet__menu">
+      <summary title="Actions for {{ wallet.name }}" aria-label="Actions for {{ wallet.name }}">
+        &middot;&middot;&middot;
+      </summary>
+      <div class="menu">
+        <button type="button" onclick="copyAddress('{{ wallet.address }}', this)">Copy address</button>
+        <a href="{{ wallet.url }}" target="_blank" rel="noopener noreferrer">Open on Etherscan</a>
+        {% if wallet.editable %}
+          <hr>
+          <button type="button" onclick="openWalletDialog('{{ wallet.id }}')">Rename&hellip;</button>
+          <button type="button"
+                  hx-post="/wallets/{{ wallet.id }}" hx-vals='{"set_owned": "{{ 'false' if wallet.is_owned else 'true' }}"}'
+                  hx-target="#wallet-dialog-body" hx-swap="innerHTML">
+            {{ 'Move to Watching' if wallet.is_owned else 'Include in portfolio' }}
+          </button>
+          <hr>
+          <button type="button" class="menu__danger"
+                  hx-post="/wallets/{{ wallet.id }}/remove"
+                  hx-target="#wallet-dialog-body" hx-swap="innerHTML"
+                  hx-confirm="Stop watching {{ wallet.name }}? Its indexed history is kept, so re-adding it later resumes where it left off.">
+            Remove from blocktail
+          </button>
+        {% endif %}
+      </div>
+    </details>
+  </div>
+{% endmacro %}
+
+<section id="wallets" class="wallets"
+         hx-get="/wallets" hx-trigger="every 30s, refreshWallets from:body, wallet-changed from:body"
+         hx-include="#wallet-value, #scope-value" hx-swap="outerHTML">
+
+  {# The group heading is the scope control: clicking it narrows the feed to
+     that group, clicking it again returns to everything. One affordance rather
+     than a heading plus a redundant list above it. #}
+  {% macro group(label, value) %}
+    {% set active = not selected_id and scope == value %}
+    <a class="wallets__group{{ ' is-selected' if active }}"
+       href="{{ '?' if active else '?scope=' ~ value }}"
+       hx-get="/activity{{ '' if active else '?scope=' ~ value }}"
+       hx-target="#feed-body" hx-swap="innerHTML" hx-include="this"
+       hx-on:click="selectScope('{{ 'all' if active else value }}')"
+       title="{{ 'Show every monitored address again' if active else 'Show only ' ~ label }}">
+      <span>{{ label }}</span>
+      {# No count here: the summary panel above already says "3 accounts". #}
+      {% if active %}<span class="wallets__clear" aria-hidden="true">&times;</span>{% endif %}
+    </a>
+  {% endmacro %}
+
+  {# With nothing watched there is only one group, so it needs no heading at
+     all. With something watched the two need to contrast, and each heading is
+     also its scope control. #}
+  {% if owned and watched %}{{ group('My wallets', 'mine') }}{% endif %}
+  {% for wallet in owned %}{{ wallet_row(wallet) }}{% endfor %}
+
+  {% if watched %}
+    {{ group('Watching', 'watched') }}
+    {% for wallet in watched %}{{ wallet_row(wallet) }}{% endfor %}
+  {% endif %}
+
+  {% if not wallets %}<p class="empty">No wallets configured.</p>{% endif %}
+
+  <button type="button" class="add-wallet-link" onclick="openWalletDialog()">+ Add wallet</button>
+</section>

@@ -1,0 +1,49 @@
+{% set editing = account is not none %}
+<form class="sheet__form" method="post"
+      action="/wallets{{ '/' ~ account.id if editing else '' }}"
+      hx-post="/wallets{{ '/' ~ account.id if editing else '' }}"
+      hx-target="#wallet-dialog-body" hx-swap="innerHTML">
+
+  <h2 class="sheet__title">{{ 'Rename wallet' if editing else 'Add wallet' }}</h2>
+
+  <label class="sheet__field">
+    <span>Name</span>
+    <input type="text" name="name" maxlength="60" autocomplete="off" required autofocus
+           value="{{ form.get('name', account.name if editing else '') }}">
+  </label>
+
+  {% if editing %}
+    <p class="sheet__static">
+      <span>Address</span>
+      <span class="num">{{ account.address }}</span>
+    </p>
+  {% else %}
+    <label class="sheet__field">
+      <span>Address</span>
+      <input type="text" name="address" autocomplete="off" spellcheck="false" required
+             placeholder="0x…" value="{{ form.get('address', '') }}">
+    </label>
+
+    <label class="sheet__field">
+      <span>Chain</span>
+      <select name="chain">
+        {% for chain_id in chains %}
+          <option value="{{ chain_id }}"
+            {% if form.get('chain', chain.chain_id) == chain_id %}selected{% endif %}>{{ chain_id }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label class="sheet__check">
+      <input type="checkbox" name="owned" value="on" {% if form.get('owned', True) %}checked{% endif %}>
+      <span>Include in my portfolio</span>
+    </label>
+  {% endif %}
+
+  {% if error %}<p class="sheet__error">{{ error }}</p>{% endif %}
+
+  <div class="sheet__actions">
+    <button type="button" class="sheet__cancel" onclick="closeWalletDialog()">Cancel</button>
+    <button type="submit" class="sheet__submit">{{ 'Save' if editing else 'Add' }}</button>
+  </div>
+</form>

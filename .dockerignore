@@ -1,0 +1,17 @@
+# Never bake secrets or local state into the image.
+.env
+wallets.yml
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Build noise: stale bytecode in an image is a debugging trap.
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.git/
+tests/
+requirements-dev.txt

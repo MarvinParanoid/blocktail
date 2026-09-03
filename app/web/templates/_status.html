@@ -1,0 +1,18 @@
+<div id="topline" class="topline" hx-get="/status" hx-trigger="every 5s, wallet-changed from:body" hx-swap="outerHTML">
+  <span class="summary" {% if summary.monitored_count != summary.account_count %}
+        title="Watched accounts are indexed but never counted towards the total"{% endif %}>
+    {{ summary.count_text }}
+    <span class="sep">&middot;</span>
+    <span class="num">{{ summary.native_total }}</span> {{ summary.native_symbol }}
+  </span>
+
+  <span class="status status--{{ status.state }}">
+    <span class="status__dot" aria-hidden="true"></span>
+    <span class="status__line">
+      {{ status.chain_name }}
+      <span class="sep">&middot;</span> #{{ status.head_block_text }}
+      <span class="sep">&middot;</span> {{ status.updated_text }}
+    </span>
+    {% if status.detail %}<span class="status__detail">{{ status.detail }}</span>{% endif %}
+  </span>
+</div>

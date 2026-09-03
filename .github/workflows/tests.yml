@@ -1,0 +1,52 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.13 is what the image ships; the others check the floor claimed in
+        # pyproject.toml is real rather than assumed.
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - run: pip install -r requirements-dev.txt
+
+      # The suite makes no network calls and needs no API key: the provider and
+      # the price source are replayed from recorded payloads.
+      - run: python -m pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.14.5
+      - run: ruff check --select F,E9 app tests
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t blocktail:ci .
+      # A container that cannot start is a broken release, and the app validates
+      # its whole configuration before it serves anything.
+      - name: refuses to start without configuration
+        run: |
+          ! docker run --rm blocktail:ci 2>&1 | tee /tmp/out
+          grep -q "ALCHEMY_API_KEY is not set" /tmp/out

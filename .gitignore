@@ -1,0 +1,16 @@
+# Secrets and personal configuration — never commit these.
+.env
+wallets.yml
+
+# Runtime state
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/

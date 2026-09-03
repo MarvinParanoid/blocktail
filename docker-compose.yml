@@ -1,0 +1,29 @@
+services:
+  blocktail:
+    build: .
+    image: blocktail:0.1.0
+    container_name: blocktail
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Clock times and the Today/Yesterday headings render in this timezone.
+      TZ: ${TZ:-UTC}
+    ports:
+      # Loopback only. This app has no authentication by design — put Caddy,
+      # nginx or Tailscale in front of it. Change to "8000:8000" only if the
+      # port is already protected by something else.
+      - "127.0.0.1:${HOST_PORT:-8000}:8000"
+    volumes:
+      - ./wallets.yml:/config/wallets.yml:ro
+      - blocktail-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  # Named volume: the indexed history survives `docker compose down` and image
+  # rebuilds. Only `docker compose down -v` removes it.
+  blocktail-data:
