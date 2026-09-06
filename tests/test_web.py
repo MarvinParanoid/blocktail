@@ -1324,7 +1324,7 @@ def _portfolio_with(client, **balances):
         if price is not None:
             client.ctx.indexer.price_source.quotes[("ethereum", contract)] = Decimal(price)
     provider.token_balances[MAIN] = made
-    client.ctx.indexer._priced_at = 0
+    client.ctx.indexer._priced_at = None
     run(client.ctx.indexer.run_once())
     return client.get("/api/portfolio").json()
 
@@ -1492,7 +1492,7 @@ def test_dust_is_never_decided_by_the_raw_amount(dusty_client, provider, prices)
 
     # Give it a price and the same transfer becomes dust.
     prices.quotes[("ethereum", mystery.contract_address)] = Decimal("1")
-    dusty_client.ctx.indexer._priced_at = 0
+    dusty_client.ctx.indexer._priced_at = None
     run(dusty_client.ctx.indexer.run_once())
     symbols = [a["asset"]["symbol"] for a in dusty_client.get("/api/activity").json()["activities"]]
     assert "WBTC" not in symbols
@@ -1504,7 +1504,7 @@ def test_hiding_dust_does_not_shorten_pages_or_skip_rows(busy_client, provider, 
     from decimal import Decimal
 
     prices.quotes[("ethereum", NATIVE)] = Decimal("0.000001")  # everything is dust now
-    busy_client.ctx.indexer._priced_at = 0
+    busy_client.ctx.indexer._priced_at = None
     run(busy_client.ctx.indexer.run_once())
 
     payload = busy_client.get("/api/activity").json()
@@ -1576,7 +1576,7 @@ def test_a_wallet_holding_one_known_asset_is_not_called_implausible(client, prov
         provider.token_balances[address] = []
     provider.token_balances[MAIN] = [Balance(usdc, 495_407_000), Balance(tiny, 10**18)]
     prices.quotes[("ethereum", tiny.contract_address)] = Decimal("2")
-    client.ctx.indexer._priced_at = 0
+    client.ctx.indexer._priced_at = None
     run(client.ctx.indexer.run_once())
 
     payload = client.get("/api/portfolio").json()
@@ -1600,7 +1600,7 @@ def test_a_scam_token_is_still_excluded(client, provider, prices):
         Balance(scam, 10**17 * 10**18),
     ]
     prices.quotes[("ethereum", scam.contract_address)] = Decimal("0.049")
-    client.ctx.indexer._priced_at = 0
+    client.ctx.indexer._priced_at = None
     run(client.ctx.indexer.run_once())
 
     assert client.get("/api/portfolio").json()["excluded_assets"] == ["SCAM"]
@@ -1642,7 +1642,7 @@ def test_a_ticker_that_apes_a_known_one_is_never_trusted(client, provider, price
         provider.token_balances[address] = []
     provider.token_balances[MAIN] = [Balance(fake, 10**9)]
     prices.quotes[("ethereum", fake.contract_address)] = Decimal("1")
-    client.ctx.indexer._priced_at = 0
+    client.ctx.indexer._priced_at = None
     run(client.ctx.indexer.run_once())
 
     payload = client.get("/api/portfolio").json()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 import pytest
@@ -328,7 +329,7 @@ def test_prices_refresh_on_their_own_slower_cadence(settings, provider, prices, 
     run(ctx.indexer.run_once())
     assert prices.calls == 1, "activity syncs must not drag a price call along each time"
 
-    ctx.indexer._priced_at = 0  # as if the interval had elapsed
+    ctx.indexer._priced_at = None  # as if it had never run
     run(ctx.indexer.run_once())
     assert prices.calls == 2
     ctx.db.close()
@@ -353,7 +354,7 @@ def test_a_price_outage_keeps_the_last_known_prices(settings, provider, prices, 
     before = ctx.db.prices_by_asset()
 
     prices.fail_with = ProviderDown("down")
-    ctx.indexer._priced_at = 0
+    ctx.indexer._priced_at = None
     run(ctx.indexer.run_once())
 
     after = ctx.db.prices_by_asset()
@@ -579,3 +580,26 @@ def test_the_sweep_still_catches_what_no_transfer_explains(app_ctx, provider, sa
     accounts = {a.name: a.id for a in app_ctx.db.list_accounts()}
     refreshed = app_ctx.db.balances_by_account()[accounts["Main"]]
     assert refreshed[0]["amount_raw"] == str(7 * 10**18)
+
+
+def test_never_means_never_not_the_moment_the_machine_booted(settings, provider, prices,
+                                                             sample_transfers, monkeypatch):
+    """`time.monotonic()` has an arbitrary origin — on Linux it counts from
+    boot. Zero as a stand-in for "never last refreshed" therefore means "boot
+    time", so the first refresh happens on a machine that has been up for hours
+    and is silently skipped on one that has just started.
+
+    This passed on every machine it was tried on and failed on CI, which is the
+    only fresh machine in the loop.
+    """
+    real = time.monotonic
+    base = real()
+    monkeypatch.setattr(time, "monotonic", lambda: real() - base + 40.0)
+
+    fresh = replace(settings, price_refresh=300, balance_refresh=600)
+    ctx = _priced_ctx(fresh, provider, prices, sample_transfers)
+    result = run(ctx.indexer.run_once())
+
+    assert result.prices_updated > 0, "a fresh process has never priced anything"
+    assert result.balances_updated > 0, "nor read any balance"
+    ctx.db.close()

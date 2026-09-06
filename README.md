@@ -1,5 +1,10 @@
 # blocktail
 
+[![tests](https://github.com/MarvinParanoid/blocktail/actions/workflows/tests.yml/badge.svg)](https://github.com/MarvinParanoid/blocktail/actions/workflows/tests.yml)
+[![python](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
+[![licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
+[![read-only](https://img.shields.io/badge/keys-never%20requested-3ddc84)](#what-it-deliberately-is-not)
+
 > `tail -f` for your wallets.
 
 A small, self-hosted, **read-only** activity monitor for a fixed set of Ethereum

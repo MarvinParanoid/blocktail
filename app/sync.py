@@ -65,8 +65,14 @@ class Indexer:
         self.db = db
         self.provider = provider
         self.price_source = price_source
-        self._priced_at = 0.0
-        self._balances_at = 0.0
+        # `None`, not 0.0. These are compared against `time.monotonic()`, whose
+        # origin is arbitrary — on Linux it counts from boot. Zero as a stand-in
+        # for "never" means "boot time", so on a machine that has been up for
+        # hours the first refresh happens and on one freshly booted it is
+        # silently skipped for a whole interval. It worked everywhere it was
+        # tried and failed on CI, which is what a fresh machine looks like.
+        self._priced_at: float | None = None
+        self._balances_at: float | None = None
         self.chain = chain
         self.config = config
         self.settings = settings
@@ -222,7 +228,11 @@ class Indexer:
         if self.price_source is None:
             return 0
         now = time.monotonic()
-        if not force and now - self._priced_at < self.settings.price_refresh:
+        if (
+            not force
+            and self._priced_at is not None
+            and now - self._priced_at < self.settings.price_refresh
+        ):
             return 0
 
         rows = await asyncio.to_thread(self.db.held_assets)
@@ -330,7 +340,11 @@ class Indexer:
         safety net for anything that argument misses.
         """
         now = time.monotonic()
-        if forced or now - self._balances_at >= self.settings.balance_refresh:
+        if (
+            forced
+            or self._balances_at is None
+            or now - self._balances_at >= self.settings.balance_refresh
+        ):
             self._balances_at = now
             return accounts
 
