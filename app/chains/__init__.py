@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from app.models import Balance, Transfer
+from app.models import Balance, TransactionCost, Transfer
 
 
 class UnknownChainError(ValueError):
@@ -44,6 +44,13 @@ class Chain(Protocol):
 
     def explorer_block_url(self, block_number: int) -> str: ...
 
+    def known_label(self, address: str) -> str | None:
+        """A name this chain is known to use for ``address``, or ``None``.
+
+        Chain-specific by nature: an address means nothing without the chain it
+        is on, and the same twenty bytes name different things elsewhere.
+        """
+
 
 @runtime_checkable
 class ChainDataProvider(Protocol):
@@ -71,6 +78,14 @@ class ChainDataProvider(Protocol):
         """All transfers in ``[from_block, to_block]`` where ``address`` is the
         sender (``outgoing``) or the recipient. Providers that expose separate
         endpoints per transfer type merge them here."""
+
+    async def get_transaction_cost(self, tx_hash: str) -> TransactionCost | None:
+        """What the transaction cost, or ``None`` when the chain cannot say.
+
+        Read on demand rather than indexed. Returning ``None`` is a normal
+        answer — a provider that does not expose receipts, or a transaction the
+        node has since pruned — and the caller shows nothing rather than a zero.
+        """
 
     async def close(self) -> None: ...
 

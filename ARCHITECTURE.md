@@ -276,6 +276,13 @@ Two guards exist because live mainnet data demanded them, not by anticipation:
   is excluded from it and named in the panel, rather than silently believed or
   silently dropped.
 
+  Only assets nothing vouches for are candidates. The first version of this
+  guard excluded a wallet's USDC because it was 99% of that wallet — which is
+  what a stablecoin wallet looks like, and the cure was worse than the disease.
+  A token that is known, vouched for in the config, or has been sent by one of
+  your own wallets is never called implausible. The sidebar and the summary run
+  the same rule, so one wallet never carries two different totals.
+
 Where valuation stops is deliberate: there is no cost basis, no profit and loss,
 no 24-hour change and no price history. Each of those needs a methodology —
 which lot, which timestamp, which venue — that this tool does not have and

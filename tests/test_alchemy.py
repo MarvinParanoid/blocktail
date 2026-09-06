@@ -352,3 +352,50 @@ def test_the_same_token_is_looked_up_once_even_when_asked_at_once():
 
     assert metadata_calls == 1
     run(source.close())
+
+
+def test_a_throttled_response_is_waited_out_not_given_up_on():
+    """Alchemy answers a burst past the plan's compute-per-second ceiling with
+    403, not 429. Reading that as "forbidden" abandons a call that would have
+    succeeded a moment later — which is what took the live instance red."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            return httpx.Response(403)
+        return rpc_result("0x1406f40")
+
+    provider = make_provider(handler, max_retries=4)
+    assert run(provider.get_head_block()) == 21_000_000
+    assert attempts["n"] == 3
+    run(provider.close())
+
+
+def test_only_a_couple_of_requests_are_in_flight_at_once():
+    """The free tier caps compute per second, and the backfill fans out over
+    every wallet at once."""
+    import asyncio as _asyncio
+
+    in_flight = 0
+    peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await _asyncio.sleep(0.01)
+        in_flight -= 1
+        return rpc_result("0x1406f40")
+
+    async def exercise():
+        provider = AlchemyProvider(
+            "https://x/v2/k",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            max_concurrency=2,
+        )
+        await _asyncio.gather(*(provider.get_head_block() for _ in range(12)))
+        await provider.close()
+
+    run(exercise())
+    assert peak <= 2

@@ -2,7 +2,7 @@
 {% block title %}blocktail{% endblock %}
 
 {% block content %}
-<div class="scrim" onclick="closeScopeSheet()" hidden></div>
+<div class="scrim" onclick="closeSheets()" hidden></div>
 
 <div class="app">
 <header class="topbar">
@@ -12,7 +12,7 @@
 
 {% include "_summary.html" %}
 
-<main class="layout">
+<main class="layout{{ ' one-wallet' if filters.account_id is not none }}">
   <aside class="sidebar" id="sidebar">
     {% include "_wallets.html" %}
   </aside>
@@ -65,28 +65,29 @@
         </select>
       </label>
 
+      {# On a phone the search box is one of three rows in a bar that has to
+         earn every pixel above the feed, and it is the control used least
+         often. So it collapses to a button and takes the whole bar when it is
+         actually wanted. Neither button exists on a wide screen. #}
+      <button type="button" class="field-toggle field-toggle--open" onclick="toggleSearch(true)"
+              aria-label="Search" title="Search">
+        <svg viewBox="0 0 14 14" aria-hidden="true">
+          <circle cx="6" cy="6" r="4.2"/><path d="M9.2 9.2 12.6 12.6"/>
+        </svg>
+      </button>
+
       <label class="field field--search">
         <span class="field__label">Search</span>
         <input type="search" name="q" id="search" value="{{ filters.search }}"
                placeholder="address, tx hash or label" autocomplete="off" spellcheck="false">
+        {# On the right, where a search box's clear control lives, rather than
+           a back arrow on the left that reads as page navigation. #}
+        <button type="button" class="field-toggle field-toggle--close" onclick="closeSearch()"
+                aria-label="Close search">&times;</button>
       </label>
 
     </form>
-
-
-    {% if dust_hidden or filters.show_dust %}
-      {# Never silently absent: this is a monitor, and a hidden event still
-         happened. #}
-      <p class="dust-note">
-        {% if filters.show_dust %}
-          Showing transfers worth under a cent.
-          <button type="button" class="linkish" onclick="toggleDust(false)">Hide them</button>
-        {% else %}
-          {{ '{:,}'.format(dust_hidden) }} dust transfer{{ '' if dust_hidden == 1 else 's' }} hidden
-          <button type="button" class="linkish" onclick="toggleDust(true)">Show</button>
-        {% endif %}
-      </p>
-    {% endif %}
+    {% include "_dust_note.html" %}
 
     <div class="table-scroll">
       <table class="feed">
@@ -107,6 +108,14 @@
       </table>
     </div>
   </section>
+
+  {# Docked to the right of the feed on a wide screen, and the same component
+     docked to the bottom on a narrow one — the treatment the wallet list already
+     uses. A dialog would have to be dismissed before the feed could be read, and
+     the point of an inspector is to sit beside what it inspects. #}
+  <aside class="inspector" id="inspector" aria-label="Transaction">
+    <div id="inspector-body"></div>
+  </aside>
 </main>
 </div>
 
@@ -116,9 +125,6 @@
   <div id="wallet-dialog-body"></div>
 </dialog>
 
-<dialog id="activity-sheet" class="sheet" aria-label="Activity">
-  <div id="activity-sheet-body"></div>
-</dialog>
 
 {% include "_behaviour.html" %}
 {% endblock %}

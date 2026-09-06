@@ -2,7 +2,7 @@
 {% block title %}blocktail · lab{% endblock %}
 
 {% block content %}
-<div class="scrim" onclick="closeScopeSheet()" hidden></div>
+<div class="scrim" onclick="closeSheets()" hidden></div>
 
 <div class="app lab">
   <header class="topbar">
@@ -73,19 +73,7 @@
       </label>
 
     </form>
-    {% if dust_hidden or filters.show_dust %}
-      {# Never silently absent: this is a monitor, and a hidden event still
-         happened. #}
-      <p class="dust-note">
-        {% if filters.show_dust %}
-          Showing transfers worth under a cent.
-          <button type="button" class="linkish" onclick="toggleDust(false)">Hide them</button>
-        {% else %}
-          {{ '{:,}'.format(dust_hidden) }} dust transfer{{ '' if dust_hidden == 1 else 's' }} hidden
-          <button type="button" class="linkish" onclick="toggleDust(true)">Show</button>
-        {% endif %}
-      </p>
-    {% endif %}
+    {% include "_dust_note.html" %}
     </div>
 
       <div class="table-scroll">
@@ -119,9 +107,13 @@
   <div id="wallet-dialog-body"></div>
 </dialog>
 
-<dialog id="activity-sheet" class="sheet" aria-label="Activity">
-  <div id="activity-sheet-body"></div>
-</dialog>
+{# Docked to the right of the feed on a wide screen, and the same component
+   docked to the bottom on a narrow one — the treatment the wallet list already
+   uses. A dialog would have to be dismissed before the feed could be read, and
+   the point of an inspector is to sit beside what it inspects. #}
+<aside class="inspector" id="inspector" aria-label="Transaction">
+  <div id="inspector-body"></div>
+</aside>
 
 {% include "_behaviour.html" %}
 {% endblock %}

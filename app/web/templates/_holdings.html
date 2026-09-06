@@ -1,0 +1,30 @@
+<div class="detail">
+  <div class="sheet__head">
+    <h2 class="sheet__title">Assets</h2>
+    <button type="button" class="insp__close" onclick="closeWalletDialog()" aria-label="Close">&times;</button>
+  </div>
+
+  <ul class="holdings holdings--all">
+    {% for asset in portfolio.assets %}
+      <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--muted' if asset.hidden }}">
+        <a class="holding__hit" href="?asset={{ asset.asset_id }}"
+           hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
+           hx-include="#wallet-value, #scope-value"
+           hx-on:click="filterByAsset('{{ asset.asset_id }}'); closeWalletDialog()">
+          <span class="holding__sym">{{ asset.symbol }}</span>
+          <span class="holding__amount num">{{ asset.amount_text }}</span>
+          <span class="holding__value num">{{ asset.value_text or '' }}</span>
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
+
+  {% if portfolio.hidden %}
+    {# Named apart from the collapse above: these are filtered out because
+       nothing vouches for them, not merely folded away for room. #}
+    <p class="detail__note">
+      {{ portfolio.hidden }} of these are dust or unverified tokens, kept and
+      indexed but never counted towards the total.
+    </p>
+  {% endif %}
+</div>

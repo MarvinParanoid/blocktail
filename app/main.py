@@ -75,7 +75,9 @@ def build_context(
         from app.chains.ethereum.alchemy import AlchemyProvider
 
         provider = AlchemyProvider(
-            settings.alchemy_url, max_token_lookups=settings.max_token_lookups
+            settings.alchemy_url,
+            max_token_lookups=settings.max_token_lookups,
+            max_concurrency=settings.provider_concurrency,
         )
 
     if price_source is None and settings.prices_available:

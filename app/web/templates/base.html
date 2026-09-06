@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}blocktail{% endblock %}</title>
-  <link rel="stylesheet" href="{{ stylesheet | default('/static/app.css') }}">
+  <link rel="stylesheet" href="{{ static_url(stylesheet | default('app.css')) }}">
   <meta name="description" content="blocktail — tail -f for your wallets. A read-only Ethereum activity monitor.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230b0d10'/><path d='M8 11l5 5-5 5' fill='none' stroke='%233ddc84' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M17 21h7' fill='none' stroke='%233ddc84' stroke-width='3' stroke-linecap='round'/></svg>">
   <script>
@@ -21,7 +21,7 @@
       }
     } catch (e) {}
   </script>
-  <script src="/static/htmx.min.js"></script>
+  <script src="{{ static_url('htmx.min.js') }}"></script>
 </head>
 <body>
   {% block content %}{% endblock %}

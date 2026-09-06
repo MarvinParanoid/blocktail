@@ -1,0 +1,67 @@
+<div class="insp" data-selected="{{ tx.selected_id }}">
+  <header class="insp__head">
+    <span class="insp__label">Transaction</span>
+    <a class="insp__hash num" href="{{ tx.tx_url }}" target="_blank" rel="noopener noreferrer"
+       title="{{ tx.tx_hash }} — open on Etherscan">{{ tx.tx_short }}<span class="insp__ext" aria-hidden="true">&#8599;</span></a>
+    <button type="button" class="insp__close" onclick="closeInspector()" aria-label="Close">&times;</button>
+  </header>
+
+  {# Two lines rather than a key/value table. Where the transaction sits, and
+     when: both are context for the transfers below, not findings of their own,
+     and laid out as a grid of labels they were the loudest thing on the panel. #}
+  <div class="insp__where">
+    <p class="insp__line">
+      {{ tx.chain_name }}
+      <span class="sep">&middot;</span>
+      <a class="num" href="{{ tx.block_url }}" target="_blank" rel="noopener noreferrer"
+         title="Open block {{ tx.block_text }} on Etherscan">#{{ tx.block_text }}</a>
+      <span class="sep">&middot;</span>
+      <span class="num">{{ tx.confirmations_text }} conf</span>
+    </p>
+    <p class="insp__line insp__dim">
+      {{ tx.day_text }}, {{ tx.time_text }}
+      <span class="sep">&middot;</span> {{ tx.age_text }}
+      {% if tx.succeeded is false %}
+        <span class="sep">&middot;</span> <span class="insp__failed">failed</span>
+      {% endif %}
+    </p>
+  </div>
+
+  <section class="insp__section">
+    <h3 class="insp__label">
+      Transfers <span class="insp__n num">{{ tx.count }}</span>
+    </h3>
+
+    <ol class="xfers">
+      {% for t in tx.transfers %}
+        <li class="xfer xfer--{{ t.direction }}{{ ' is-current' if t.id == tx.selected_id }}">
+          <div class="xfer__amount">
+            <span class="amount">{{ t.amount_text }}</span
+            >{% if t.asset_url %}<a class="sym" href="{{ t.asset_url }}" target="_blank" rel="noopener noreferrer">{{ t.symbol }}</a>{% else %}<span class="sym">{{ t.symbol }}</span>{% endif -%}
+            {%- if t.kind_badge %}<span class="kind">{{ t.kind_badge }}</span>{% endif %}
+            {%- if t.value_text %}<span class="fiat">{{ t.value_text }}</span>{% endif %}
+          </div>
+          <div class="xfer__route">
+            <span class="xfer__end{{ ' is-mine' if t.source.is_monitored }}"
+                  title="{{ t.source.title }}">{{ t.source.display }}</span>
+            <span class="arrow" aria-hidden="true">&rarr;</span>
+            <span class="xfer__end{{ ' is-mine' if t.target.is_monitored }}"
+                  title="{{ t.target.title }}">{{ t.target.display }}</span>
+          </div>
+          {% if t.kind_note %}<p class="xfer__note">{{ t.kind_note }}</p>{% endif %}
+        </li>
+      {% endfor %}
+    </ol>
+  </section>
+
+  {# Absent entirely when the chain would not say. A fee rendered as zero is a
+     claim about what something cost, and the wrong one. #}
+  {% if tx.fee_text %}
+    <dl class="insp__cost">
+      <dt>Fee</dt>
+      <dd><span class="num">{{ tx.fee_text }}</span
+        >{% if tx.fee_value_text %} <span class="insp__dim num">{{ tx.fee_value_text }}</span>{% endif %}</dd>
+      {% if tx.gas_text %}<dt>Gas</dt><dd class="num">{{ tx.gas_text }}</dd>{% endif %}
+    </dl>
+  {% endif %}
+</div>

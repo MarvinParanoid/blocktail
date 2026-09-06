@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from app.chains.ethereum.keccak import keccak256
+from app.chains.ethereum.known_addresses import label_for
 
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
@@ -85,6 +86,9 @@ class EthereumChain:
 
     def explorer_block_url(self, block_number: int) -> str:
         return f"{self.explorer_base}/block/{block_number}"
+
+    def known_label(self, address: str) -> str | None:
+        return label_for(address)
 
     def explorer_token_url(self, contract_address: str) -> str:
         return f"{self.explorer_base}/token/{self.display_address(contract_address)}"

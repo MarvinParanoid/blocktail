@@ -86,6 +86,8 @@ class FakeProvider:
 
     transfers: list[Transfer] = field(default_factory=list)
     head_block: int = 21_000_100
+    balance_calls: list[str] = field(default_factory=list)
+    costs: dict[str, object] = field(default_factory=dict)
     native_balances: dict[str, int] = field(default_factory=dict)
     token_balances: dict[str, list[Balance]] = field(default_factory=dict)
     fail_with: Exception | None = None
@@ -102,6 +104,7 @@ class FakeProvider:
         return self.head_block
 
     async def get_native_balance(self, address: str) -> int:
+        self.balance_calls.append(address.lower())
         if self.fail_balances_with:
             raise self.fail_balances_with
         return self.native_balances.get(address.lower(), 0)
@@ -110,6 +113,9 @@ class FakeProvider:
         if self.fail_balances_with:
             raise self.fail_balances_with
         return list(self.token_balances.get(address.lower(), []))
+
+    async def get_transaction_cost(self, tx_hash: str):
+        return self.costs.get(tx_hash.lower())
 
     async def get_transfers(
         self, address: str, *, outgoing: bool, from_block: int, to_block: int
@@ -173,8 +179,10 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         reorg_depth=8,
         max_token_balances=10,
         max_token_lookups=200,
+        provider_concurrency=2,
         stale_after=180,
         price_refresh=300,
+        balance_refresh=0,  # sweep every cycle; the policy has its own tests
         prices_enabled=True,
         value_max_share=0.9,
         dust_below_usd=Decimal("1"),

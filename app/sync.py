@@ -66,6 +66,7 @@ class Indexer:
         self.provider = provider
         self.price_source = price_source
         self._priced_at = 0.0
+        self._balances_at = 0.0
         self.chain = chain
         self.config = config
         self.settings = settings
@@ -132,7 +133,11 @@ class Indexer:
             await asyncio.to_thread(self.db.record_failure, self.chain_id, str(exc))
             return CycleResult(self.chain_id, 0, 0, error=str(exc))
 
+        # The configured window is a floor for a fresh install; a reader who has
+        # asked for more history has asked once and for all.
         backfill_from = max(0, head - self.settings.backfill_blocks)
+        if status.requested_from_block is not None:
+            backfill_from = max(0, min(backfill_from, status.requested_from_block))
         if status.last_synced_block is None:
             from_block = backfill_from
         else:
@@ -175,7 +180,9 @@ class Indexer:
         )
 
         try:
-            result.balances_updated = await self._refresh_balances(accounts)
+            result.balances_updated = await self._refresh_balances(
+                self._needs_balances(accounts, transfers, forced=result.backfill)
+            )
         except Exception as exc:
             # Balances are secondary: a failure there should not discard the
             # activity we just indexed, but it must still be visible.
@@ -311,7 +318,29 @@ class Indexer:
         log.info("pruning %d event(s) no longer on chain in blocks %s-%s", len(stale), prune_from, head)
         return self.db.drop_activities(self.chain_id, stale)
 
+    def _needs_balances(
+        self, accounts: list[Account], transfers: list[Transfer], *, forced: bool
+    ) -> list[Account]:
+        """Which wallets to re-read balances for this cycle.
+
+        A balance cannot change without a transfer, and we have just read every
+        transfer. So the wallets that moved are the wallets to re-read, and
+        asking the provider about the other four every thirty seconds buys
+        nothing but rate-limit headroom spent. The periodic full sweep is the
+        safety net for anything that argument misses.
+        """
+        now = time.monotonic()
+        if forced or now - self._balances_at >= self.settings.balance_refresh:
+            self._balances_at = now
+            return accounts
+
+        moved = {a for t in transfers for a in (t.from_address, t.to_address)}
+        return [account for account in accounts if account.address in moved]
+
     async def _refresh_balances(self, accounts: list[Account]) -> int:
+        if not accounts:
+            return 0
+
         native_asset = AssetRef(
             chain_id=self.chain_id,
             contract_address=NATIVE,

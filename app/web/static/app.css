@@ -109,6 +109,7 @@ a.sym:hover { color: var(--accent); }
   flex: none;
 }
 .status--ok .status__dot       { background: var(--in); }
+.status--lagging .status__dot  { background: var(--warn); opacity: 0.7; }
 .status--stale .status__dot    { background: var(--warn); }
 .status--error .status__dot    { background: var(--error); }
 .status--starting .status__dot { background: var(--own); }
@@ -189,7 +190,11 @@ a.sym:hover { color: var(--accent); }
 .summary-collapsed .summary__addr { display: none; }
 /* Sits against the name, and stays visible when the panel is collapsed: that
    is exactly where it would otherwise be easy to forget whose money this is. */
+.field-toggle, .topline__scope, .holdings__more { display: none; }
+.summary__bar { display: contents; }
+
 .summary__badge {
+  order: 9;
   font: 600 9.5px/1 var(--sans);
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -238,6 +243,7 @@ a.sym:hover { color: var(--accent); }
   text-transform: uppercase;
   color: var(--dim);
 }
+.figure--total .figure__main { font-size: 21px; color: var(--text-hi); }
 .figure__main {
   font-size: 19px;
   line-height: 1.2;
@@ -297,6 +303,18 @@ a.sym:hover { color: var(--accent); }
 .holding__hit > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .holding__sym { color: var(--muted); }
 .holding--native .holding__sym { color: var(--text-hi); }
+/* A marker between items in the horizontal strip, where the eye needs to know
+   where one holding ends and the next begins. In the narrow layout the
+   holdings are a table, the columns already do that, and the same mark reads
+   as a bullet — so it is dropped there rather than kept for consistency. */
+.holding__sym::before {
+  content: "\25c9";
+  margin-right: 6px;
+  font-size: 9px;
+  color: var(--dim);
+  vertical-align: 1px;
+}
+.holding--native .holding__sym::before { content: "\25c8"; color: var(--own); }
 .holding__amount { text-align: right; color: var(--text-hi); }
 .holding__value { text-align: right; color: var(--muted); min-width: 5em; }
 .holding--excluded .holding__value {
@@ -320,9 +338,36 @@ html.show-hidden-tokens .holding--hidden .holding__sym { color: var(--dim); }
   border-bottom: 1px dotted var(--border-hi);
 }
 .linkish:hover { color: var(--text-hi); }
-html.show-hidden-tokens .linkish { color: var(--own); }
+.when-shown { display: none; }
+html.show-hidden-tokens .when-shown { display: inline; }
+html.show-hidden-tokens .when-hidden { display: none; }
 
 .holding--more { padding: 3px 6px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+
+.holdings__more {
+  width: 100%;
+  padding: 5px 14px 2px;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font: 12px var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.holdings__more::after { content: "\203a"; margin-left: 6px; color: var(--dim); }
+.holdings__more:hover { color: var(--text-hi); }
+.holdings__more:hover::after { color: var(--text-hi); }
+
+.sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.holdings--all { max-height: 52vh; overflow-y: auto; }
+.holding--muted .holding__sym,
+.holding--muted .holding__amount { color: var(--dim); }
+.detail__note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--dim); }
 
 /* --------------------------------------------------------- activity detail */
 
@@ -351,12 +396,137 @@ html.show-hidden-tokens .linkish { color: var(--own); }
   word-break: break-all;
 }
 
+/* --------------------------------------------------------------- inspector */
+
+/* Left: the tail. Right: what the selected line actually was. The feed keeps
+   one row per transfer because that is the honest unit, and the transaction
+   that caused several of them lives here instead of collapsing the feed into a
+   tree. Nothing is summed: a token added to an unrelated token is not a total. */
+.inspector {
+  display: none;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  min-width: 0;
+}
+html.inspector-open .inspector { display: block; }
+
+.insp { display: flex; flex-direction: column; }
+.insp__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 9px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.insp__label {
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  flex: none;
+}
+.insp__hash {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.insp__hash:hover { color: var(--accent); text-decoration: none; }
+.insp__ext { margin-left: 5px; color: var(--dim); }
+.insp__hash:hover .insp__ext { color: var(--accent); }
+.insp__close {
+  flex: none;
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  color: var(--muted);
+  font: 17px/1 var(--sans);
+  cursor: pointer;
+}
+.insp__close:hover { color: var(--text-hi); }
+
+.insp__where {
+  padding: 9px 14px 11px;
+  border-bottom: 1px solid var(--border);
+}
+.insp__line {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.insp__line a { color: var(--muted); }
+.insp__line a:hover { color: var(--accent); }
+.insp__dim { color: var(--dim); }
+.insp__failed { color: var(--error); }
+
+/* Secondary by construction: what it cost is rarely why you opened it. */
+.insp__cost {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  padding: 10px 14px 13px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.insp__cost dt {
+  font: 600 10px/1.6 var(--sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.insp__cost dd { margin: 0; min-width: 0; }
+
+.insp__section { padding: 11px 0 14px; }
+.insp__section h3 { margin: 0 14px 8px; display: flex; align-items: baseline; gap: 7px; }
+.insp__n { color: var(--muted); font-size: 11px; letter-spacing: 0; }
+
+.xfers { list-style: none; margin: 0; padding: 0; }
+.xfer {
+  padding: 7px 14px 8px;
+  border-left: 2px solid transparent;
+}
+/* The row you came from, so the panel never loses its referent. */
+.xfer.is-current { border-left-color: var(--own); background: var(--panel-2); }
+.xfer__amount { display: flex; align-items: baseline; flex-wrap: wrap; }
+.xfer__amount .sym { margin-left: 5px; }
+.xfer__amount .fiat { margin-left: auto; padding-left: 10px; }
+.xfer__route {
+  margin-top: 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--dim);
+  min-width: 0;
+}
+.xfer__note {
+  margin: 3px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dim);
+}
+.xfer__end { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xfer__end.is-mine { color: var(--text); }
+.xfer__route .arrow { flex: none; color: var(--muted); }
+.xfer--in .amount  { color: var(--in); }
+.xfer--out .amount { color: var(--out); }
+.xfer--between .amount, .xfer--self .amount { color: var(--own); }
+
 /* ------------------------------------------------------------------ layout */
 
 .layout {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
 }
+html.inspector-open .layout { grid-template-columns: 200px minmax(0, 1fr) 330px; }
 
 .sidebar {
   border-right: 1px solid var(--border);
@@ -404,6 +574,7 @@ a.wallets__group:hover { color: var(--text-hi); text-decoration: none; backgroun
   background: var(--panel);
   border-left-color: var(--own);
 }
+.wallets__group--all { border-bottom: 1px solid var(--border); }
 .wallets__count { color: var(--dim); font-family: var(--mono); letter-spacing: 0; }
 .wallets__clear { color: var(--muted); font-size: 13px; line-height: 1; }
 .wallets__group.is-selected:hover .wallets__clear { color: var(--error); }
@@ -413,7 +584,7 @@ a.wallets__group:hover { color: var(--text-hi); text-decoration: none; backgroun
   border-left: 2px solid transparent;
 }
 .wallet:hover { background: #10151b; }
-.wallet.is-selected { background: var(--panel); border-left-color: var(--own); }
+.wallet.is-selected { background: var(--panel-2); border-left-color: var(--own); }
 
 .wallet__hit {
   display: flex;
@@ -628,6 +799,10 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
   color: var(--dim);
 }
 .dust-note .linkish { color: var(--muted); }
+.dust-note__why { color: var(--dim); }
+/* Keeps its place in the document so it can be swapped, without leaving a
+   stripe of padding when there is nothing to say. */
+.dust-note.is-empty { display: none; }
 
 /* Loading shows where the app already reports on itself, rather than as a
    free-floating dot next to the search box. */
@@ -678,6 +853,14 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
   vertical-align: baseline;
 }
 .row:hover td { background: var(--panel); }
+.row[data-activity] { cursor: pointer; }
+
+/* The hash is metadata until you go looking for it, and a revealed affordance
+   on hover says the row itself is the thing to press. */
+.cell-tx .hash { opacity: 0.55; transition: opacity 90ms linear; }
+.row:hover .cell-tx .hash, .cell-tx .hash:focus-visible { opacity: 1; }
+.row.is-open td { background: var(--panel-2); }
+.row.is-open .cell-time { box-shadow: inset 2px 0 0 var(--own); }
 
 /* Day separator: a label with a rule running out to the right. */
 .row--day td {
@@ -689,19 +872,68 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
   display: flex;
   align-items: center;
   gap: 10px;
-  font: 600 10px/1 var(--sans);
-  letter-spacing: 0.12em;
+  font: 600 10.5px/1 var(--sans);
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text);
 }
 .day::after {
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--border);
+  background: var(--border-hi);
 }
 
 .row--empty td, .row--more td { color: var(--muted); padding: 22px 14px; text-align: center; }
+
+/* --- one transaction, one entry ---------------------------------------- */
+
+/* The folded transfers are in the page, not fetched on demand: they came back
+   with the same query, and a reader pressing "+ 2 more" wants them now. */
+/* `[data-activity]` is what turns a row into a grid on a phone, and an
+   attribute selector outweighs a class — so hiding one has to match it. */
+.row--folded[data-activity] { display: none; }
+.row--folded[data-activity].is-shown { display: table-row; }
+
+.row--more-of td { padding: 0 0 5px 84px; border-bottom: 1px solid #1a2027; }
+.row--more-of + .row--folded td { border-top: 0; }
+.foldout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 2px 6px 2px 0;
+  background: none;
+  border: 0;
+  color: var(--dim);
+  font: 12px var(--sans);
+  cursor: pointer;
+  text-align: left;
+}
+.foldout:hover { color: var(--muted); }
+.foldout__mark {
+  font-family: var(--mono);
+  color: var(--dim);
+  width: 10px;
+}
+.foldout__one .num { color: var(--text); }
+.foldout__one .arrow { color: var(--dim); }
+.foldout__party { color: var(--muted); }
+/* Once they are on screen the summary would be describing the rows directly
+   below it, so it says only how to put them away again. */
+.foldout[aria-expanded="true"] .foldout__one,
+.foldout[aria-expanded="true"] .foldout__count { display: none; }
+.foldout[aria-expanded="true"] .foldout__mark { visibility: hidden; width: 0; }
+.foldout[aria-expanded="true"]::after { content: "hide"; }
+
+/* The end of the feed is a place to continue from, not a dead stop. */
+.row--older td { padding: 18px 14px; text-align: center; border-bottom: 0; }
+.row--older form { display: inline-flex; align-items: baseline; gap: 10px; margin: 0; }
+.row--older__hint { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+.row--older.htmx-request .linkish { color: var(--dim); }
+.row--older.htmx-request .row--older__hint::after {
+  content: " · fetching…";
+  color: var(--own);
+}
 
 /* Weight order across a row: amount, then counterparty, then wallet, then the
    time and hash which are lookup keys rather than content. */
@@ -765,10 +997,21 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 .cell-time   { width: 70px; }
 .cell-wallet { width: 13%; }
 .cell-dir    { width: 58px; }
-.cell-value  { width: 15%; }
-.cell-party  { width: 29%; }
-.cell-tx     { width: 22%; }
+.cell-value  { width: 19%; }
+.cell-party  { width: 27%; }
+.cell-tx     { width: 19%; }
 .cell-fill   { width: auto; padding: 0; }
+
+/* The inspector states the hash in full, so the column repeating it in the
+   feed is the one that can afford to go. */
+html.inspector-open .cell-tx { display: none; }
+html.inspector-open .cell-wallet { width: 15%; }
+html.inspector-open .cell-value { width: 25%; }
+html.inspector-open .cell-party { width: 42%; }
+
+/* Never clip the fiat: an amount whose value reads "$1,31…" is worse than no
+   value at all. The amount itself wraps before either is truncated. */
+.cell-value { overflow: visible; white-space: nowrap; }
 
 /* IN/OUT qualifies the amount, so it sits against it rather than trailing the
    wallet name across the empty half of its column. */
@@ -776,6 +1019,15 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 .feed thead th.cell-dir { text-align: right; }
 
 .feed td { overflow: hidden; text-overflow: ellipsis; }
+
+/* Only the narrow layout folds the row into two lines and needs a "who" line;
+   in the table the wallet has its own column and the direction its own. */
+.party__from, .party__arrow { display: none; }
+
+/* A column repeating the one wallet you selected, on every row. */
+.one-wallet .cell-wallet { display: none; }
+.one-wallet .cell-party { width: 40%; }
+.one-wallet .cell-value { width: 24%; }
 
 .cell-tx .hash { color: var(--muted); font-size: 12px; }
 .cell-tx .hash:hover { color: var(--accent); }
@@ -832,6 +1084,32 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
      this read as a floating card. Inside it everything sits on the page
      background and the rules do the separating. */
   .topbar, .filters { background: var(--bg); }
+
+  /* One outline around the navigator and the log, so they read as a single
+     instrument. Without a right-hand edge the table dissolves into the page
+     and the composition is left lopsided — a sidebar on the left, and loose
+     text everywhere else. It is a boundary, not a card: the fill stays the
+     page background and the radius stays small enough to be structural. */
+  .summary-panel {
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-radius: 2px 2px 0 0;
+  }
+  .layout {
+    border: 1px solid var(--border);
+    border-radius: 0 0 2px 2px;
+  }
+  /* The sidebar's own right edge is now the seam between the two columns. */
+  .app { padding-bottom: 22px; }
+
+  /* A full-height column, not a box floating in a void: the panel's own edge
+     is what gives the feed its right-hand boundary while it is open. */
+  .inspector {
+    position: sticky;
+    top: var(--topbar-h);
+    height: calc(100vh - var(--topbar-h));
+    overflow-y: auto;
+  }
 }
 
 /* --------------------------------------------------------------- narrow */
@@ -888,21 +1166,205 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
     color: var(--dim);
   }
 
-  /* The collapsed summary stacks instead of running off the edge. */
-  .summary__head { flex-wrap: wrap; row-gap: 1px; padding: 8px 16px; }
-  .summary__toggle { flex-wrap: wrap; row-gap: 1px; }
-  .summary__count { display: none; }
-  .summary__total { width: 100%; margin-left: 0; font-size: 18px; }
-  .summary__brief { width: 100%; }
-  .summary__figures { gap: 10px 26px; }
-  .figure__main { font-size: 17px; }
+  /* --- the head ---------------------------------------------------------
+
+     Two lines and no more: what you are looking at, and its address. The total
+     and the token count are not repeated here — they are the figures directly
+     below, and saying everything twice is most of what made this screen feel
+     like a desktop folded in half. */
+  /* What the panel totals and what the feed shows are two different facts,
+     and when they differ both have to be said. They share a line rather than
+     a screen: the label on the left, the control on the right. */
+  .summary__bar {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  /* The scope lives in the top bar here, which is the only thing that stays. */
+  .scope-trigger { display: none; }
+
+  .topline__scope {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    order: -1;
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--text-hi);
+    font: 600 12px var(--sans);
+    letter-spacing: 0.03em;
+    cursor: pointer;
+  }
+
+  /* One line, not three. The counts and the chain repeat what the panel below
+     already says better, and on a phone permanent chrome is the scarcest
+     thing there is. */
+  .topbar { flex-wrap: nowrap; gap: 10px; }
+  .topline { flex: 1; justify-content: flex-end; gap: 12px; flex-wrap: nowrap; }
+  .topline .summary { display: none; }
+  .status__line { display: none; }
+  .status--error .status__detail, .status--stale .status__detail,
+  .status--starting .status__detail { display: block; }
+  .status::after {
+    content: attr(data-age);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .summary__head {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding: 9px 4px 10px 16px;
+    min-width: 0;
+  }
+  .scope-trigger {
+    flex: none;
+    width: auto;
+    padding: 9px 16px 10px 8px;
+    border-top: 0;
+  }
+  .summary__toggle { flex: 1; flex-wrap: nowrap; gap: 8px; min-width: 0; }
+  .summary-collapsed .summary__chevron,
+  .summary-collapsed .summary__count,
+  .summary-collapsed .summary__total,
+  .summary-collapsed .summary__brief,
+  .summary__chevron, .summary__count,
+  .summary__total, .summary__brief { display: none; }
+  .summary__scope { font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+  .summary-collapsed .summary__addr,
+  .summary__addr {
+    display: block;
+    order: 3;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    text-align: left;
+  }
+
+
+  /* The top bar already names the scope. When the panel totals that same
+     scope, repeating it directly underneath is the duplication that made this
+     screen feel padded; when it totals something else — your wallets, while
+     the feed shows everything — it still has to say so. */
+  .summary__badge { order: 0; }
+  .scope-is-panel .summary__scope { display: none; }
+
+  /* Holdings do not fold away here: with the head cut to two lines there is
+     room for them, and they are the reason to open the app at all. */
+  .summary-collapsed .summary__body { display: block; }
+
+  /* --- one number, then a line about it -------------------------------
+
+     Three columns of metric is a desktop shape. Below 400px the third wraps
+     and the whole thing reads as a grid that broke. One figure carries the
+     answer and the rest become a sentence underneath it. */
+  .summary__figures { display: block; }
+  .figure {
+    display: flex;
+    flex-flow: row wrap;
+    align-items: baseline;
+    gap: 0 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .figure__label { display: none; }
+  .figure__main { font-size: 12px; color: var(--text); }
+  .figure__note::before { content: "\00b7"; margin-right: 6px; color: var(--dim); }
+
+  /* The total is the reason the panel exists; everything else annotates it. */
+  .figure--total { display: block; margin-bottom: 1px; }
+  .figure--total .figure__main { font-size: 25px; }
+  .figure--total .figure__note::before { content: none; }
+
+  /* "0.0051 ETH · $12.90 native" — the label does the work of a unit here,
+     so it moves to the end and stops shouting. */
+  .figure--native .figure__label {
+    display: inline;
+    order: 3;
+    text-transform: lowercase;
+    letter-spacing: 0;
+    font-size: 11.5px;
+    color: var(--dim);
+  }
 
   /* Filters lose their labels and share one row: on a phone they are a
      control strip, not a form. */
-  .filters { position: static; gap: 8px; padding: 8px 14px; }
+  /* Only one bar follows the scroll, and it is the one naming what you are
+     looking at — not the controls, which are set once and then read no more.
+     Two stacked sticky bars would cost a third of a phone screen. */
+  .filters {
+    position: static;
+    gap: 8px;
+    padding: 8px 14px;
+    flex-wrap: nowrap;
+    align-items: center;
+  }
   .field__label { display: none; }
-  .field--search { flex-basis: 100%; max-width: none; }
   .filters .spinner { display: none; }
+
+  /* A <select> is as wide as its widest option, and with fifty unrecognised
+     tokens indexed the widest is far wider than a phone. Left to size itself
+     it pushed the search button clean off the screen. Its width has to come
+     from the row rather than from its contents, so: the segments keep theirs,
+     the select takes what is left, and `min-width: 0` is what actually lets a
+     flex item shrink below its content. */
+  .filters .field--dir { flex: 0 0 auto; }
+  .filters .field { flex: 1 1 0; min-width: 0; }
+  .filters select { width: 100%; min-width: 0; }
+
+  .field-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 30px;
+    height: 25px;
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--muted);
+    font: 13px var(--sans);
+    cursor: pointer;
+  }
+  .field-toggle svg {
+    width: 14px; height: 14px;
+    fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round;
+  }
+  .field-toggle--open { margin-left: auto; }
+  .field-toggle--close { display: none; font-size: 17px; }
+
+  /* Collapsed: the strip is direction, asset and a magnifier. */
+  .field--search { display: none; }
+  /* Expanded: the strip is a back arrow and the box, and nothing else. */
+  .filters.is-searching .field--dir,
+  .filters.is-searching .field:not(.field--search),
+  .filters.is-searching .field-toggle--open { display: none; }
+  .filters.is-searching .field--search {
+    display: flex;
+    flex-flow: row nowrap;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    max-width: none;
+  }
+  .filters.is-searching .field-toggle--close { display: flex; }
+
+  /* A search in force is never collapsed behind the magnifier: a filter you
+     cannot see is a filter you will not think to clear. */
+  .filters.has-search .field--dir,
+  .filters.has-search .field:not(.field--search),
+  .filters.has-search .field-toggle--open { display: none; }
+  .filters.has-search .field--search {
+    display: flex;
+    flex-flow: row nowrap;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    max-width: none;
+  }
+  .filters.has-search .field-toggle--close { display: flex; }
 
   /* --- the feed as a log ------------------------------------------------ */
   .feed { table-layout: auto; }
@@ -912,37 +1374,162 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
   .row { display: block; border-bottom: 1px solid var(--border); }
   .row td { border-bottom: 0; padding: 0; white-space: normal; }
 
+  /* --- an event log, not a folded table -------------------------------
+
+     Keeping the desktop columns meant a 56px lane spent on the clock and the
+     amount starting a third of the way across a 400px screen. Here the first
+     line says who, the second says what moved, and both use the full width. */
   .row[data-activity] {
     display: grid;
-    grid-template-columns: 56px auto minmax(0, 1fr);
+    /* Fixed, not `auto`: the "who" line spans the last two tracks, and a grid
+       hands a spanning item's width to the auto track first — which quietly
+       squeezed the amount until its value wrapped onto a third line. */
+    grid-template-columns: 46px 32px minmax(0, 1fr);
     align-items: baseline;
-    gap: 1px 8px;
-    padding: 8px 14px 9px;
+    gap: 0 8px;
+    padding: 3px 14px 4px;
+    line-height: 1.35;
     grid-template-areas:
-      "time   wallet wallet"
-      ".      dir    value"
-      ".      .      party";
+      "time party party"
+      ".    dir   value";
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
   }
+  /* Nothing else on this screen responds to a press, so a row that opens
+     something has to say so at the moment it is touched. */
+  .row[data-activity]:active td { background: var(--panel-2); }
+
+  /* Restated after the grid rule above: the two match with equal weight, so
+     source order is what decides, and hidden has to be the one that wins. */
+  .row--folded[data-activity] { display: none; }
+  .row--folded[data-activity].is-shown { display: grid; }
+  /* Its name is on the "who" line now, so the column of its own goes. */
+  .row[data-activity]:not(.row--between):not(.row--self) .cell-wallet { display: none; }
+
+  /* A transfer between two of your own wallets has no counterparty and no
+     direction: the pair is the whole of "who", and the amount has the second
+     line to itself. */
+  .row--between[data-activity], .row--self[data-activity] {
+    grid-template-areas:
+      "time wallet wallet"
+      ".    value  value";
+  }
+  .row--between .cell-value, .row--self .cell-value { grid-column: 2 / -1; }
   .row[data-activity]:hover td, .row[data-activity] td { background: none; }
   /* The desktop column budget is percentages of a table; as grid items those
-     percentages resolve against the row and clip everything. */
-  .row td { width: auto; overflow: visible; text-overflow: clip; }
+     percentages resolve against the row and clip everything. `.feed .row td`
+     rather than `.row td`, because the scope-dependent overrides above are two
+     classes deep and would otherwise win here — which squeezed the amount
+     until its value wrapped onto a line of its own. */
+  .feed .row td { width: auto; overflow: visible; text-overflow: clip; }
   .cell-time   { grid-area: time; }
   .cell-wallet { grid-area: wallet; }
   .cell-dir    { grid-area: dir; text-align: left; }
+  /* Centred in a 30px box, "IN" started seven pixels right of "OUT" and the
+     second line wandered against the first. Everything an event says now
+     begins on the same vertical: the wallet, the direction, the ↳. */
+  .row[data-activity] .dir { min-width: 0; text-align: left; }
   .cell-value  { grid-area: value; }
   .cell-party  { grid-area: party; max-width: none; }
   .cell-tx, .cell-fill { display: none; }
 
-  .row[data-activity] .amount { font-size: 14px; }
-  .fiat { margin-left: 7px; }
+  .holding__sym::before { display: none; }
+
+  /* Two lines whether the wallet holds two tokens or three hundred, and never
+     the native one — it is stated in the line directly above, and a phone has
+     the least room to spend saying anything twice. */
+  .holdings-row { flex-wrap: wrap; gap: 0; }
+  .holdings { flex: 1 1 100%; order: 1; }
+  /* Both are footnotes on the list above; between them they get one line,
+     not two. */
+  .holdings__more { flex: 0 1 auto; order: 2; display: block; width: auto; }
+  .holdings__age { order: 3; margin-left: auto; padding: 5px 14px 2px; }
+
+  .holdings > .holding:not(.holding--compact),
+  .holdings .holding--more { display: none; }
+  /* ...except in the sheet, which is where the rest went. */
+  .holdings--all > .holding { display: block; }
+
+  /* Read as a table rather than a strip, the tickers are a column and have to
+     be as legible as the numbers beside them. */
+  .holding__sym { color: var(--text); }
+  /* Each holding is its own grid, so an `auto` value column makes every row
+     size differently and the amounts stop lining up — which is the one thing
+     a column of numbers is for. Fixed width, and they align. */
+  .holding__hit { grid-template-columns: minmax(0, 4.6em) minmax(0, 1fr) 6.6em; }
+
+  .cell-value { display: flex; align-items: baseline; flex-wrap: wrap; }
+  .row[data-activity] .amount { font-size: 13.5px; }
+  .cell-value .sym { margin-left: 5px; }
+  /* Pushed to the edge: down a column of rows the eye reads the values as a
+     column, which is the whole reason to show them. */
+  .fiat { margin-left: auto; padding-left: 10px; }
   .party__addr { display: none; }
   .ext { display: none; }
 
+  /* The second line is "who": the wallet, an arrow that repeats the direction,
+     and the other side. In a single-wallet scope the wallet is dropped and the
+     arrow carries the direction on its own. */
+  .party__from { display: inline; color: var(--text); margin-right: 6px; }
+  .party__arrow { display: inline; margin-right: 6px; color: var(--muted); }
+  .cell-party { font-size: 12.5px; }
+  .party > .label, .party > .addr { color: var(--accent); }
+  .row--in .party__arrow  { color: var(--in); }
+  .row--out .party__arrow { color: var(--out); }
+  .one-wallet .party__from { display: none; }
+
+  /* A date deserves less height than a transaction: it is a marker, not an
+     entry, and at 40px it was costing a screenful over a long history. */
+  /* The same vertical as the wallet and the direction above it. */
+  .row--more-of td { padding: 0 0 4px 68px; }
+
+  /* "181 = 111 + 70" is one fact explaining another, and on a phone the
+     explanation crowds the thing it explains. The number and the way to see
+     them stay; the split is on the wider screen that has room for it. */
+  .dust-note__why { display: none; }
+  .row--folded[data-activity].is-shown { display: grid; }
+
   .row--day { padding: 0; }
-  .row--day td { grid-column: 1 / -1; padding: 16px 14px 5px; }
+  .row--day td { grid-column: 1 / -1; padding: 8px 14px 2px; }
+  .row--day .day { font-size: 9.5px; }
   .row--empty td, .row--more td { padding: 22px 14px; }
+
+  /* The inspector is the bottom sheet here, sharing the sidebar's treatment
+     rather than being a second, differently-behaved overlay. */
+  html.inspector-open .layout { grid-template-columns: 1fr; }
+  /* As tall as its contents, and no taller: a transaction with one transfer
+     has no business covering half a phone. Long ones scroll inside. */
+  .inspector {
+    display: block;
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 60;
+    height: auto;
+    max-height: 70vh;
+    overflow-y: auto;
+    border-left: 0;
+    border-top: 1px solid var(--border-hi);
+    border-radius: 10px 10px 0 0;
+    transform: translateY(101%);
+    transition: transform 170ms ease-out;
+  }
+
+  /* The one conventional mobile affordance here, and it earns its place: a
+     panel docked to the bottom edge has to say it can be dismissed. */
+  .inspector::before {
+    content: "";
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: block;
+    width: 34px;
+    height: 3px;
+    margin: 7px auto 0;
+    border-radius: 2px;
+    background: var(--border-hi);
+  }
+  html.inspector-open .inspector { transform: none; }
+  html.inspector-open .scrim { display: block; }
 
   /* Same sheet component as the wallet dialog, docked to the bottom. */
   .sheet {

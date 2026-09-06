@@ -385,9 +385,8 @@ def test_a_day_heading_never_repeats_across_pages(busy_client):
 
 def test_only_internal_transfers_are_badged(client):
     feed = client.get("/activity").text
-    rows = re.findall(r'<tr class="row row--\w+" data-activity.*?</tr>', feed, re.S)
+    badged = [row for row in rows_of(feed) if 'class="kind"' in row]
 
-    badged = [row for row in rows if 'class="kind"' in row]
     assert len(badged) == 1, "native and token kinds are inferable and must not be labelled"
     assert ">int<" in badged[0]
     assert ">native<" not in feed and ">token<" not in feed
@@ -403,12 +402,26 @@ def test_amount_and_asset_are_one_cell(client):
 
 def test_the_owned_accounts_need_no_heading_of_their_own(client):
     """The summary panel above already says whose wallets these are; repeating
-    it directly underneath is the same word twice."""
+    it directly underneath is the same word twice. "All activity" is not that
+    repetition — it is the way back, and with nothing watched it is the only
+    heading the list needs."""
     body = client.get("/wallets").text
+    headings = re.findall(r'class="wallets__group[^"]*"[^>]*>\s*<span>([^<]+)</span>', body)
 
     assert "scope-link" not in body, "the redundant list of scopes is gone"
-    assert "wallets__group" not in body, "with nothing watched, one group needs no heading"
+    assert [h.strip() for h in headings] == ["All activity"]
     assert body.index(">Main</span>") < body.index(">Cold</span>")
+
+
+def test_returning_to_everything_is_a_place_not_an_undo(client):
+    """Clicking the selected group again to clear it is discoverable only once
+    you have already found it. On a phone this list is the only scope control
+    there is, so getting back has to be somewhere you can go."""
+    body = client.get("/wallets").text
+
+    assert 'wallets__group--all' in body
+    assert "All activity" in body
+    assert body.index("All activity") < body.index(">Main</span>")
 
 
 def test_the_two_groups_contrast_without_echoing_the_summary(mixed_client):
@@ -418,7 +431,7 @@ def test_the_two_groups_contrast_without_echoing_the_summary(mixed_client):
     body = mixed_client.get("/wallets").text
     headings = re.findall(r'class="wallets__group[^"]*"[^>]*>\s*<span>([^<]+)</span>', body)
 
-    assert headings == ["My wallets", "Watching"]
+    assert headings == ["All activity", "My wallets", "Watching"]
     assert 'hx-get="/activity?scope=mine"' in body
     assert 'hx-get="/activity?scope=watched"' in body
     assert body.index("My wallets") < body.index(">Main</span>") < body.index("Watching")
@@ -563,8 +576,14 @@ def test_dust_is_hidden_but_reachable(client):
     named and one click from being shown."""
     body = client.get("/summary").text
 
-    assert "1 token hidden" in body
+    assert "1 hidden" in body
     assert "toggleHiddenTokens()" in body
+    assert "when-hidden" in body, "and it reads as something to press"
+
+    # And it belongs to the token count, not to the total: under TOTAL VALUE it
+    # read as though the hidden ones were missing from the figure above it.
+    total, _, tokens = body.partition('<span class="figure__label">Tokens</span>')
+    assert "toggleHiddenTokens()" not in total
     assert "holding--hidden" in body, "still rendered, just not displayed"
     assert "FREE-AIRDROP" in body
 
@@ -646,9 +665,9 @@ def test_erc20_holdings_are_called_tokens_not_assets(client):
     """NATIVE is an asset too, so "4 assets" under TOKENS reads as the whole
     portfolio. These four are ERC-20s."""
     body = client.get("/summary").text
-    tokens = re.search(r"Tokens.*?</div>", body, re.S).group(0)
+    tokens = re.search(r'<span class="figure__label">Tokens</span>.*?</div>', body, re.S).group(0)
 
-    assert re.search(r"\d+ tokens?", tokens)
+    assert re.search(r"\d+ (tokens?|shown)", tokens)
     assert "asset" not in tokens
 
 
@@ -689,13 +708,33 @@ def test_the_columns_are_proportioned_not_packed(client):
     for proportional in (".cell-wallet", ".cell-value", ".cell-party", ".cell-tx"):
         assert re.search(rf"\{proportional} +\{{ width: \d+%", css), proportional
 
-    # Counterparty is the widest column and transaction the second widest: on
-    # real data those two carry the most and are the least abbreviable.
+    # Counterparty is the widest: on real data it is the least abbreviable.
+    # Amount is not below the hash any more — a hash reads fine shortened, and
+    # "$1,31…" is a number the reader cannot use.
     widths = {
         name: int(re.search(rf"\.cell-{name} +\{{ width: (\d+)%", css).group(1))
         for name in ("wallet", "value", "party", "tx")
     }
-    assert widths["party"] > widths["tx"] > widths["value"] >= widths["wallet"]
+    assert widths["party"] > widths["value"] >= widths["tx"] > widths["wallet"]
+
+
+def test_the_fiat_beside_an_amount_is_never_clipped(client):
+    """An amount and what it was worth are one fact. Truncating the second half
+    of it to "$1,31…" is worse than not showing it at all."""
+    css = (pathlib.Path("app/web/static/app.css")).read_text()
+    rule = css.split(".cell-value { overflow:")[1].split("}")[0]
+    assert "visible" in rule
+
+
+def test_an_internal_transfer_says_what_it_is(client):
+    """"int" is short enough for a dense row and opaque on its own. The words
+    belong where there is room to read them."""
+    rows = client.ctx.db.query_activities(limit=200)
+    internal = next(r for r in rows if r["kind"] == "internal")
+
+    assert "int" in client.get("/activity").text
+    body = client.get(f"/tx/{internal['id']}").text
+    assert "moved by the contract this transaction called" in body
 
 
 # ------------------------------------------------------- owned vs watched
@@ -723,14 +762,16 @@ def mixed_client(settings, provider, prices, sample_transfers):
 
 
 def rows_of(body: str) -> list[str]:
-    return re.findall(r'<tr class="row row--\w+" data-activity.*?</tr>', body, re.S)
+    """Activity rows only: not the day markers, and not the folded siblings."""
+    found = re.findall(r'<tr class="row row--[^"]*"\s+data-activity.*?</tr>', body, re.S)
+    return [row for row in found if "row--folded" not in row]
 
 
 def test_the_sidebar_separates_mine_from_watched(mixed_client):
     body = mixed_client.get("/wallets").text
     groups = re.findall(r'class="wallets__group[^"]*"[^>]*>\s*<span>([^<]+)</span>', body)
 
-    assert [g.strip() for g in groups] == ["My wallets", "Watching"]
+    assert [g.strip() for g in groups] == ["All activity", "My wallets", "Watching"]
     assert body.index(">Main</span>") < body.index("Watching")
     assert body.index(">Whale</span>") > body.index("Watching")
     assert body.index(">Whale</span>") > body.index("Watching")
@@ -1044,22 +1085,61 @@ def test_a_watched_wallet_says_so_in_both_summary_states(mixed_client):
     )
 
 
-# ------------------------------------------------------------------ narrow
+# -------------------------------------------------------------- inspector
 
 
-def test_a_row_can_be_opened_on_its_own(client):
-    """The narrow feed drops the hash and block to stay readable; opening a row
-    is where they go, rather than being lost."""
+def test_a_row_opens_the_transaction_behind_it(client):
+    """The feed drops the hash and block to stay readable. They are not lost:
+    they are in the inspector, beside the rest of the transaction."""
     row_id = client.ctx.db.query_activities(limit=1)[0]["id"]
-    body = client.get(f"/activity/{row_id}").text
+    body = client.get(f"/tx/{row_id}").text
 
     assert re.search(r"0x[0-9a-f]{64}", body), "the full transaction hash"
     assert "etherscan.io/tx/" in body and "etherscan.io/block/" in body
-    assert "From" in body and "To" in body and "Block" in body
+    assert "Transfers" in body and "#" in body and "conf" in body
+
+
+def _a_swap(client):
+    """One transaction, three transfers — what a swap actually looks like."""
+    client.ctx.provider.transfers = [
+        transfer("swap", sender=MAIN, recipient=STRANGER, amount=200 * 10**6,
+                 asset=USDC, kind=TransferKind.TOKEN, log_index=3, block=21_000_400),
+        transfer("swap", sender=MAIN, recipient=STRANGER, amount=368_040,
+                 asset=USDC, kind=TransferKind.TOKEN, log_index=4, block=21_000_400),
+        transfer("swap", sender=STRANGER, recipient=MAIN, amount=5 * 10**16,
+                 kind=TransferKind.INTERNAL, trace="0_1", block=21_000_400),
+    ]
+    client.ctx.provider.head_block = 21_000_410
+    run(client.ctx.indexer.run_once())
+    rows = [r for r in client.ctx.db.query_activities(limit=200)
+            if r["block_number"] == 21_000_400]
+    assert len(rows) == 3
+    return rows
+
+
+def test_the_inspector_shows_every_transfer_of_one_transaction(client):
+    """A swap is one transaction and several transfers. The feed keeps them
+    apart because that is the honest unit; the inspector puts them back in one
+    place, without inventing a total by adding unlike things together."""
+    rows = _a_swap(client)
+    body = client.get(f"/tx/{rows[0]['id']}").text
+
+    assert body.count('class="xfer ') == 3
+    assert '<span class="insp__n num">3</span>' in body
+    assert "$" not in body.split("Transfers")[0].split("Depth")[-1], "no invented total"
+
+
+def test_the_inspector_marks_the_row_you_came_from(client):
+    rows = _a_swap(client)
+    row_id = rows[-1]["id"]
+
+    body = client.get(f"/tx/{row_id}").text
+    assert body.count("is-current") == 1
+    assert f'data-selected="{row_id}"' in body
 
 
 def test_opening_a_missing_row_says_so(client):
-    response = client.get("/activity/999999")
+    response = client.get("/tx/999999")
     assert response.status_code == 404
     assert "gone" in response.text
 
@@ -1079,12 +1159,12 @@ def test_the_narrow_layout_is_not_a_squeezed_desktop(client):
     assert "max-width: 860px" in base, "the summary starts collapsed on a narrow screen"
 
 
-def test_a_row_opens_only_on_a_narrow_screen(client):
-    """On a wide screen a row carries its own links; making it clickable as well
-    would fight them."""
+def test_a_row_is_clickable_without_swallowing_its_links(client):
+    """The row opens the transaction; the links inside it keep their own jobs.
+    One trigger filter does that, rather than a stopPropagation on each link."""
     body = client.get("/activity").text
-    assert 'hx-trigger="click[isNarrow()]"' in body
-    assert "event.stopPropagation()" in body, "the counterparty link filters, not opens"
+    assert "click[!event.target.closest('a,button')]" in body
+    assert 'hx-get="/tx/' in body
 
 
 def test_the_narrow_scope_selector_names_what_the_feed_shows(client):
@@ -1150,8 +1230,18 @@ def test_the_desktop_content_is_bounded_and_centred(client):
 
     assert "width: min(100% - 40px, 1440px)" in shell
     assert "margin-inline: auto" in shell
-    for card in ("box-shadow", "border-radius", "border:"):
-        assert card not in shell, f"the container must not become a card ({card})"
+    assert "box-shadow" not in shell, "a shadow would lift it off the page"
+    assert "background: var(--panel)" not in shell, "no band of fill ending at the edge"
+
+
+def test_the_activity_area_has_a_right_hand_edge(client):
+    """A sidebar on the left and unbounded text on the right reads as an
+    unfinished composition. The outline is a boundary, not a card: the fill is
+    still the page background."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    shell = css.split("@media (min-width: 861px) {")[1].split("\n}")[0]
+
+    assert ".layout {" in shell and "border: 1px solid var(--border)" in shell
     assert ".topbar, .filters { background: var(--bg); }" in shell, (
         "panel bands ending at the container edge read as a card"
     )
@@ -1457,14 +1547,14 @@ def test_dust_transfers_are_out_of_the_feed_by_default(dusty_client):
 
 def test_the_feed_says_how_much_it_is_hiding(dusty_client):
     body = dusty_client.get("/").text
-    assert "2 dust transfers hidden" in body
+    assert "2 noisy transfers hidden" in body and "2 dust" in body
     assert "toggleDust(true)" in body
 
 
 def test_dust_can_be_shown(dusty_client):
     shown = dusty_client.get("/api/activity", params={"dust": "show"}).json()["activities"]
     assert "0.000059" in [a["amount"] for a in shown]
-    assert "Showing transfers worth under a cent" in dusty_client.get(
+    assert "Showing dust and unverified" in dusty_client.get(
         "/", params={"dust": "show"}
     ).text
 
@@ -1476,7 +1566,8 @@ def test_dust_is_never_decided_by_the_raw_amount(dusty_client, provider, prices)
 
     from app.models import AssetRef
 
-    mystery = AssetRef("ethereum", "0x" + "7" * 40, "MYSTERY", 6)
+    # A token the chain *is* known for, so only the dust rule can act on it.
+    mystery = AssetRef("ethereum", "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", "WBTC", 6)
     # Only held assets get priced, so give it a balance too — otherwise there is
     # no price and therefore, correctly, no verdict either way.
     provider.token_balances[MAIN] = [*provider.token_balances.get(MAIN, []), Balance(mystery, 59)]
@@ -1488,14 +1579,14 @@ def test_dust_is_never_decided_by_the_raw_amount(dusty_client, provider, prices)
     run(dusty_client.ctx.indexer.run_once())
 
     symbols = [a["asset"]["symbol"] for a in dusty_client.get("/api/activity").json()["activities"]]
-    assert "MYSTERY" in symbols, "no price means no verdict"
+    assert "WBTC" in symbols, "no price means no dust verdict"
 
     # Give it a price and the same transfer becomes dust.
     prices.quotes[("ethereum", mystery.contract_address)] = Decimal("1")
     dusty_client.ctx.indexer._priced_at = 0
     run(dusty_client.ctx.indexer.run_once())
     symbols = [a["asset"]["symbol"] for a in dusty_client.get("/api/activity").json()["activities"]]
-    assert "MYSTERY" not in symbols
+    assert "WBTC" not in symbols
 
 
 def test_hiding_dust_does_not_shorten_pages_or_skip_rows(busy_client, provider, prices):
@@ -1559,3 +1650,580 @@ def test_the_summary_header_has_no_nested_buttons(client):
     assert "<button" not in toggle[len("<button"):], "the toggle contains no other button"
     assert 'class="summary__addr"' in body, "the address button is a sibling"
     assert body.index('class="summary__toggle"') < body.index('class="summary__addr"')
+
+
+def test_a_wallet_holding_one_known_asset_is_not_called_implausible(client, provider, prices):
+    """Live data caught this: a wallet holding $495 of USDC and $0.54 of
+    everything else had the USDC struck out, so the headline read $0.53. Holding
+    almost entirely one stablecoin is ordinary; only assets nothing vouches for
+    can be implausible."""
+    from decimal import Decimal
+
+    from app.models import AssetRef
+
+    usdc = AssetRef("ethereum", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC", 6)
+    tiny = AssetRef("ethereum", "0x" + "1" * 40, "TINY", 18)
+    for address in list(provider.token_balances):
+        provider.token_balances[address] = []
+    provider.token_balances[MAIN] = [Balance(usdc, 495_407_000), Balance(tiny, 10**18)]
+    prices.quotes[("ethereum", tiny.contract_address)] = Decimal("2")
+    client.ctx.indexer._priced_at = 0
+    run(client.ctx.indexer.run_once())
+
+    payload = client.get("/api/portfolio").json()
+    usdc_row = next(a for a in payload["assets"] if a["symbol"] == "USDC")
+
+    assert payload["excluded_assets"] == [], "USDC is a token this chain is known for"
+    assert usdc_row["value"] == "$495.41", "and it counts towards the total"
+
+
+def test_a_scam_token_is_still_excluded(client, provider, prices):
+    """The guard still does its job on what it was built for."""
+    from decimal import Decimal
+
+    from app.models import AssetRef
+
+    scam = AssetRef("ethereum", "0x" + "9" * 40, "SCAM", 18)
+    for address in list(provider.token_balances):
+        provider.token_balances[address] = []
+    provider.token_balances[MAIN] = [
+        Balance(AssetRef("ethereum", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC", 6), 10**6),
+        Balance(scam, 10**17 * 10**18),
+    ]
+    prices.quotes[("ethereum", scam.contract_address)] = Decimal("0.049")
+    client.ctx.indexer._priced_at = 0
+    run(client.ctx.indexer.run_once())
+
+    assert client.get("/api/portfolio").json()["excluded_assets"] == ["SCAM"]
+
+
+def test_the_sidebar_and_the_panel_agree_on_a_wallet(client):
+    """Two different sums for one wallet — one in the list, one in the summary —
+    is a contradiction the reader cannot resolve."""
+    main = account_id(client, "Main")
+    panel = client.get("/api/portfolio", params={"wallet": main}).json()["total"]
+    sidebar = re.search(
+        r'<div class="wallet[^"]*">.*?>Main</span>.*?title="([^"]+)"',
+        client.get("/wallets").text,
+        re.S,
+    ).group(1)
+
+    assert sidebar == panel
+
+
+# --------------------------------------------------------------- impostors
+
+
+def test_a_ticker_that_apes_a_known_one_is_never_trusted(client, provider, prices):
+    """Live data: `Ụ᠋SDC` and `Ụ᠋5DT` — homoglyphs of USDC and USDT — were marked
+    as *sent by the user*, because an ERC-20 contract can emit a Transfer log
+    with any `from` it likes. Address poisoning does exactly that, so a forged
+    ticker overrides every other signal."""
+    from decimal import Decimal
+
+    from app.models import AssetRef
+
+    fake = AssetRef("ethereum", "0x" + "3" * 40, "Ụ᠋SDC", 6)
+    provider.transfers = [
+        *provider.transfers,
+        transfer("poison", sender=MAIN, recipient=STRANGER, amount=10**9, asset=fake,
+                 kind=TransferKind.TOKEN, log_index=21, block=21_000_095),
+    ]
+    for address in list(provider.token_balances):
+        provider.token_balances[address] = []
+    provider.token_balances[MAIN] = [Balance(fake, 10**9)]
+    prices.quotes[("ethereum", fake.contract_address)] = Decimal("1")
+    client.ctx.indexer._priced_at = 0
+    run(client.ctx.indexer.run_once())
+
+    payload = client.get("/api/portfolio").json()
+    visible = payload["assets"][: len(payload["assets"]) - payload["hidden_assets"]]
+
+    assert "Ụ᠋SDC" not in [a["symbol"] for a in visible], (
+        "priced, held and apparently sent — and still not shown"
+    )
+    # Still selectable, but under "Unrecognised" rather than beside the real
+    # USDC: a monitor may not pretend an on-chain thing is not there.
+    select = re.search(r"<select name=\"asset\".*?</select>", client.get("/").text, re.S).group(0)
+    main_list, _, unrecognised = select.partition("<optgroup")
+    assert "Ụ᠋SDC" not in main_list, "never listed beside the token it apes"
+    assert "Ụ᠋SDC" in unrecognised, "but still selectable — it is on the chain"
+
+
+def test_the_real_token_is_untouched(client):
+    """The rule is about deception, not about the ticker: the genuine contract
+    keeps its name."""
+    body = client.get("/").text
+    assert "USDC" in body
+
+
+def test_unrecognised_tokens_stay_out_of_the_feed(client, provider):
+    """An airdrop with no price, no listing and no history is what the noise on
+    a live address is made of."""
+    from app.models import AssetRef
+
+    junk = AssetRef("ethereum", "0x" + "4" * 40, "Duhash.games", 18)
+    provider.transfers = [
+        *provider.transfers,
+        transfer("junk", sender=STRANGER, recipient=MAIN, amount=150 * 10**18, asset=junk,
+                 kind=TransferKind.TOKEN, log_index=31, block=21_000_096),
+    ]
+    run(client.ctx.indexer.run_once())
+
+    symbols = [a["asset"]["symbol"] for a in client.get("/api/activity").json()["activities"]]
+    assert "Duhash.games" not in symbols
+    assert "Duhash.games" in [
+        a["asset"]["symbol"]
+        for a in client.get("/api/activity", params={"dust": "show"}).json()["activities"]
+    ], "kept, indexed, and one click away"
+
+
+def test_the_hidden_count_refreshes_with_the_filters(dusty_client):
+    """It sits outside the swapped feed body, so it used to keep whatever it
+    said when the page was first rendered — the toggle most visibly, but the
+    count was also wrong after switching wallets."""
+    note = dusty_client.get("/dust-note").text
+    assert "2 noisy transfers hidden" in note
+    assert 'hx-trigger="filtersApplied from:body"' in note
+
+    shown = dusty_client.get("/dust-note", params={"dust": "show"}).text
+    assert "Showing dust and unverified" in shown and "hidden" not in shown
+
+    main = account_id(dusty_client, "Payments")
+    assert "hidden" not in dusty_client.get("/dust-note", params={"wallet": main}).text
+
+    behaviour = pathlib.Path("app/web/templates/_behaviour.html").read_text()
+    assert "dispatchEvent(new Event('filtersApplied'))" in behaviour
+
+
+# --------------------------------------------------------------- older history
+
+
+def test_the_end_of_the_feed_offers_to_go_further(client):
+    """The feed ends where the backfill window was set, not where the history
+    does. An unexplained stop reads as "there is nothing older"."""
+    body = client.get("/").text
+
+    assert "Load" in body and "more days" in body
+    assert 'hx-post="/history/older"' in body
+    assert "indexed back to block #" in body
+
+
+def test_asking_for_older_history_moves_the_floor_and_keeps_it(client):
+    before = client.ctx.db.history_floor("ethereum")
+    response = client.post("/history/older", headers={"sec-fetch-site": "same-origin"})
+
+    assert response.status_code == 200
+    after = client.ctx.db.get_sync_status("ethereum").requested_from_block
+    assert after is not None and after < before
+
+    # It survives a restart: BACKFILL_DAYS is a deployment default, this is the
+    # reader having asked once and for all.
+    client.post("/history/older", headers={"sec-fetch-site": "same-origin"})
+    deeper = client.ctx.db.get_sync_status("ethereum").requested_from_block
+    assert deeper < after
+
+    client.ctx.db.request_history_from("ethereum", deeper + 10_000)
+    assert client.ctx.db.get_sync_status("ethereum").requested_from_block == deeper, (
+        "the request only ever goes deeper"
+    )
+
+
+def test_the_indexer_honours_a_deeper_request(app_ctx, provider, sample_transfers):
+    provider.transfers = sample_transfers
+    run(app_ctx.indexer.run_once())
+    provider.calls.clear()
+
+    app_ctx.db.request_history_from("ethereum", 1_000_000)
+    result = run(app_ctx.indexer.run_once())
+
+    assert result.from_block == 1_000_000
+    assert min(from_block for _, _, _, from_block, _ in provider.calls) == 1_000_000
+
+
+def test_loading_older_history_is_not_open_to_other_sites(client):
+    response = client.post("/history/older", headers={"sec-fetch-site": "cross-site"})
+    assert response.status_code == 403
+    assert client.ctx.db.get_sync_status("ethereum").requested_from_block is None
+
+
+def test_small_but_ordinary_transfers_are_not_dust(dusty_client, provider, prices):
+    """0.000346 ETH is 87 cents: below nobody's threshold for interesting, and
+    not remotely spam. The two accusations are separate and it deserves neither."""
+    provider.transfers = [
+        *provider.transfers,
+        transfer("small-eth", sender=STRANGER, recipient=MAIN, amount=346_000_000_000_000,
+                 block=21_000_097),
+    ]
+    run(dusty_client.ctx.indexer.run_once())
+
+    amounts = [a["amount"] for a in dusty_client.get("/api/activity").json()["activities"]]
+    assert "0.000346" in amounts
+
+
+def test_the_two_reasons_are_counted_apart(dusty_client, provider):
+    """"Small" and "unknown" are different accusations, and lumping them into
+    one number leaves the reader unable to tell which is which."""
+    from app.models import AssetRef
+
+    junk = AssetRef("ethereum", "0x" + "8" * 40, "Duhash.games", 18)
+    provider.transfers = [
+        *provider.transfers,
+        transfer("junk2", sender=STRANGER, recipient=MAIN, amount=150 * 10**18, asset=junk,
+                 kind=TransferKind.TOKEN, log_index=41, block=21_000_098),
+    ]
+    run(dusty_client.ctx.indexer.run_once())
+
+    note = dusty_client.get("/dust-note").text
+    assert "dust" in note and "unverified" in note
+
+
+# ----------------------------------------------------------------- narrow
+
+
+def test_the_scope_lives_in_the_bar_that_never_scrolls_away(client):
+    """A sticky child stops sticking the moment its parent has scrolled past,
+    so the summary panel cannot hold the scope on a phone. The top bar can."""
+    body = client.get("/status").text
+
+    assert "topline__scope" in body
+    assert "openScopeSheet()" in body
+    assert ">All activity</span>" in body
+
+    # And it follows the selection rather than waiting for the next poll.
+    assert "refreshWallets from:body" in body
+
+
+def test_the_head_does_not_repeat_what_the_bar_already_says(client, mixed_client):
+    """With a wallet selected the panel totals exactly what the feed shows, and
+    the top bar has already named it. With "All activity" in the feed the panel
+    is still totalling only your wallets, and has to say so."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    assert ".scope-is-panel .summary__scope { display: none; }" in css
+
+    mine = next(a for a in mixed_client.ctx.db.list_accounts() if a.name == "Main")
+    assert "scope-is-panel" in mixed_client.get("/summary", params={"wallet": mine.id}).text
+    assert "scope-is-panel" not in mixed_client.get("/summary").text
+
+
+def test_the_second_line_of_a_row_is_who(client):
+    """Folded to two lines, a row says what moved and who with. The arrow
+    repeats the direction so the counterparty carries it too."""
+    body = client.get("/activity").text
+
+    assert 'class="party__from"' in body
+    assert "&larr;" in body or "&rarr;" in body
+
+
+def test_one_wallet_in_scope_drops_its_name_from_every_row(client):
+    """Repeated on every row, the name of the one wallet you selected is not
+    information."""
+    def layout_class(body: str) -> str:
+        return re.search(r'<main class="([^"]*)"', body).group(1)
+
+    account = client.ctx.db.list_accounts()[0]
+    assert "one-wallet" in layout_class(client.get("/", params={"wallet": account.id}).text)
+    assert "one-wallet" not in layout_class(client.get("/").text)
+
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    assert ".one-wallet .cell-wallet { display: none; }" in css
+    assert ".one-wallet .party__from { display: none; }" in css
+
+
+def test_search_is_a_mode_on_a_phone_not_a_third_row(client):
+    """Three stacked rows of controls above the feed is most of a phone screen
+    spent on the thing used least."""
+    body = client.get("/").text
+    assert "toggleSearch(true)" in body and "closeSearch()" in body
+
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    narrow = css.split("@media (max-width: 860px) {")[1]
+    assert ".filters.is-searching .field--search" in narrow
+    # A filter in force is never hidden behind a button.
+    assert ".filters.has-search .field--search {" in narrow
+
+
+def test_the_filter_strip_fits_the_phone_it_is_on(client):
+    """A <select> is as wide as its widest option, and the unrecognised group's
+    label is wider than a phone — which pushed the search button off screen."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    narrow = css.split("@media (max-width: 860px) {")[1]
+
+    # Its width has to come from the row, not from its own contents.
+    assert ".filters .field { flex: 1 1 0; min-width: 0; }" in narrow
+    assert ".filters select { width: 100%; min-width: 0; }" in narrow
+
+
+def test_a_deploy_that_changes_the_css_is_a_deploy_the_browser_notices(client):
+    """A browser holding the old stylesheet and the new markup makes a shipped
+    fix look like a shipped bug. The tag is a digest of the file, so it changes
+    exactly when the file does and not on every request."""
+    import re as _re
+
+    from app.web.assets import static_url
+
+    body = client.get("/").text
+    hrefs = _re.findall(r'(?:href|src)="(/static/[^"]+)"', body)
+    assert hrefs, "the page loads static assets"
+    for href in hrefs:
+        assert _re.search(r"\?v=[0-9a-f]{6,}$", href), href
+
+    assert static_url("app.css") == static_url("app.css"), "stable between requests"
+    assert static_url("app.css") != static_url("htmx.min.js")
+
+
+def test_a_missing_static_file_does_not_take_the_page_down(client):
+    from app.web.assets import static_url
+
+    assert static_url("nope.css") == "/static/nope.css?v=0"
+
+
+# ------------------------------------------------------- one tx, one entry
+
+
+def _a_swap_feed(client):
+    client.ctx.provider.transfers = [
+        transfer("grp", sender=MAIN, recipient=STRANGER, amount=811 * 10**6,
+                 asset=USDC, kind=TransferKind.TOKEN, log_index=3, block=21_000_500),
+        transfer("grp", sender=MAIN, recipient=COLD, amount=376_866,
+                 asset=USDC, kind=TransferKind.TOKEN, log_index=4, block=21_000_500),
+    ]
+    client.ctx.provider.head_block = 21_000_510
+    run(client.ctx.indexer.run_once())
+    return client.get("/activity").text
+
+
+def test_a_transaction_is_one_entry_in_the_feed(client):
+    """Two transfers of the same transaction, a second apart, read as two
+    unrelated things — which is what the feed is for avoiding."""
+    body = _a_swap_feed(client)
+
+    assert body.count("row--folded") >= 1, "the second transfer is folded away"
+    assert "row--more-of" in body, "and the entry says it is hiding something"
+
+
+def test_the_transfer_carrying_the_value_leads(client):
+    """It is the one the reader is looking for; leading with an incidental
+    0.37 of change would bury the 811 that actually moved."""
+    body = _a_swap_feed(client)
+    lead = rows_of(body)[0]
+
+    assert ">811<" in lead
+    assert "0.376866" not in lead
+
+
+def test_nothing_is_added_up_across_transfers(client):
+    """A token added to an unrelated token is not a sum, and even two amounts
+    of the same asset going to different places are two facts, not one."""
+    body = _a_swap_feed(client)
+
+    assert "811.376866" not in body
+    assert "0.376866" in body, "the folded transfer is present, just not shown"
+
+
+def test_the_folded_rows_are_already_in_the_page(client):
+    """They came back with the same query. Fetching them again on a press would
+    be a round trip for data the browser is already holding."""
+    body = _a_swap_feed(client)
+    folded = re.findall(r'<tr class="row row--[^"]*row--folded[^"]*"[^>]*data-tx="([^"]+)"', body)
+
+    assert folded, "rendered, not deferred"
+    assert 'onclick="toggleFold(this)"' in body
+    assert "hx-get" not in re.search(r'<tr class="row row--more-of.*?</tr>', body, re.S).group(0)
+
+
+def test_paging_is_not_disturbed_by_the_reordering(client):
+    """Grouping moves rows within a transaction. Paging from a moved row would
+    skip or repeat whatever sat between it and the true end of the page."""
+    rows = client.ctx.db.query_activities(limit=500)
+    assert len(rows) > 1
+
+    body = client.get("/activity").text
+    cursor = re.search(r'before=(\d+_\d+)', body)
+    if cursor:
+        timestamp, activity_id = (int(p) for p in cursor.group(1).split("_"))
+        # The cursor is the smallest key on the page, whatever order it is shown in.
+        shown = [int(i) for i in re.findall(r'data-activity="(\d+)"', body)]
+        by_id = {r["id"]: r["block_timestamp"] for r in rows}
+        assert (timestamp, activity_id) == min((by_id[i], i) for i in shown)
+
+
+def test_a_folded_row_is_actually_hidden_on_a_phone(client):
+    """`[data-activity]` is what makes a row a grid on a narrow screen, and an
+    attribute selector outweighs a class: hiding one has to match it."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+
+    assert ".row--folded[data-activity] { display: none; }" in css
+
+    # And restated after the rule that makes a row a grid: equal weight means
+    # source order decides, so hidden has to come last.
+    narrow = css.split("@media (max-width: 860px) {")[1]
+    grid_at = narrow.index(".row[data-activity] {")
+    hide_at = narrow.index(".row--folded[data-activity] { display: none; }")
+    assert hide_at > grid_at
+    assert ".row--folded[data-activity].is-shown { display: grid; }" in narrow
+
+
+def test_the_foldout_stops_describing_rows_that_are_on_screen(client):
+    """Expanded, "+ 3 more transfers" is captioning the three rows directly
+    below it. All it still has to offer is the way back."""
+    body = _a_swap_feed(client)
+    assert 'class="foldout__one"' in body or 'class="foldout__count"' in body
+
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    assert '.foldout[aria-expanded="true"] .foldout__count { display: none; }' in css
+    assert '.foldout[aria-expanded="true"]::after { content: "hide"; }' in css
+
+
+def test_where_and_when_are_context_not_findings(client):
+    """As a grid of labelled rows, CHAIN / BLOCK / DEPTH / WHEN were the
+    loudest thing on a panel that exists to show transfers."""
+    row_id = client.ctx.db.query_activities(limit=1)[0]["id"]
+    body = client.get(f"/tx/{row_id}").text
+
+    assert "insp__where" in body and "insp__facts" not in body
+    assert "<dt>Chain</dt>" not in body and "<dt>Block</dt>" not in body
+
+
+def test_a_fee_the_chain_will_not_state_is_not_shown_as_zero(client):
+    """A fee rendered as 0 is a claim about what something cost, and the wrong
+    one. The fake provider has no receipts, so there is nothing to say."""
+    row_id = client.ctx.db.query_activities(limit=1)[0]["id"]
+    body = client.get(f"/tx/{row_id}").text
+
+    assert "insp__cost" not in body
+    assert "Fee" not in body
+
+
+def test_a_provider_failure_costs_a_line_not_the_panel(client, monkeypatch):
+    """This is the one call made because a person asked rather than on a timer,
+    and it decorates a panel that is already useful without it."""
+    async def boom(_tx_hash):
+        raise RuntimeError("provider is having a moment")
+
+    monkeypatch.setattr(client.ctx.provider, "get_transaction_cost", boom, raising=False)
+    row_id = client.ctx.db.query_activities(limit=1)[0]["id"]
+    response = client.get(f"/tx/{row_id}")
+
+    assert response.status_code == 200
+    assert "Transfers" in response.text
+    assert "insp__cost" not in response.text
+
+
+def test_a_fee_the_chain_does_state_is_priced_in_both(client):
+    from app.models import TransactionCost
+
+    row = client.ctx.db.query_activities(limit=1)[0]
+    client.ctx.provider.costs[row["tx_hash"]] = TransactionCost(
+        fee_raw=420_000_000_000_000, gas_used=41_382, gas_limit=52_000, succeeded=True
+    )
+    body = client.get(f"/tx/{row['id']}").text
+
+    assert "0.00042 ETH" in body
+    assert "41,382 / 52,000" in body
+    assert "$" in body.split("Fee")[1].split("Gas")[0], "and what that was worth"
+
+
+def test_a_failed_transaction_says_so(client):
+    from app.models import TransactionCost
+
+    row = client.ctx.db.query_activities(limit=1)[0]
+    client.ctx.provider.costs[row["tx_hash"]] = TransactionCost(
+        fee_raw=1, gas_used=21_000, gas_limit=21_000, succeeded=False
+    )
+    assert "failed" in client.get(f"/tx/{row['id']}").text
+
+
+# --------------------------------------------------- the phone's budget
+
+
+def test_the_portfolio_header_has_a_fixed_height_on_a_phone(client):
+    """Its height must not depend on how many tokens have been sent to the
+    address, which on this chain is not something the owner controls."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    narrow = css.split("@media (max-width: 860px) {")[1]
+
+    assert ".holdings > .holding:not(.holding--compact)," in narrow
+    assert ".holdings--all > .holding { display: block; }" in narrow, "the sheet shows all"
+
+
+def test_the_native_balance_is_not_said_twice_on_a_phone(client):
+    """It is a figure in the line directly above the list. A phone has the
+    least room of any surface to spend repeating itself."""
+    body = client.get("/summary").text
+    compact = re.findall(r'class="holding([^"]*)"', body)
+    native = [c for c in compact if "holding--native" in c]
+
+    assert native, "the fixture holds the native asset"
+    assert all("holding--compact" not in c for c in native)
+
+
+def test_more_is_not_the_same_word_as_hidden(client):
+    """"Hidden" is what the spam filter does. Folding the fourth token away for
+    room is a different thing, and one word for both is how a reader stops
+    trusting either."""
+    body = client.get("/summary").text
+    if "holdings__more" in body:
+        more = re.search(r'class="holdings__more".*?</button>', body, re.S).group(0)
+        assert "hidden" not in more
+        assert "more" in more
+
+
+def test_everything_held_is_a_tap_away(client):
+    """Capping the panel at three is only honest if the rest are reachable."""
+    body = client.get("/holdings").text
+    shown = re.findall(r'class="holding__sym">([^<]+)<', body)
+    panel = re.findall(r'class="holding__sym">([^<]+)<', client.get("/summary").text)
+
+    assert len(shown) >= len(panel)
+    assert "Assets" in body
+
+
+def test_a_row_of_numbers_lines_up(client):
+    """Each holding is its own grid, so an `auto` value column sizes every row
+    differently and the amounts stop lining up."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    narrow = css.split("@media (max-width: 860px) {")[1]
+
+    assert "minmax(0, 4.6em) minmax(0, 1fr) 6.6em" in narrow
+
+
+def test_the_scope_class_is_kept_in_step_with_the_feed(client):
+    """htmx swaps the feed and leaves the container's server-rendered class
+    behind. A stale `one-wallet` hides a cell that spans two columns on
+    transfers between your own wallets, and takes the row's layout with it."""
+    behaviour = client.get("/").text
+
+    assert "function syncScopeClass()" in behaviour
+    assert "syncScopeClass();" in behaviour.split("function afterFilterChange")[1]
+
+
+def test_a_transfer_between_your_wallets_spans_two_columns(client):
+    """Which is exactly why hiding that cell cannot be left to a stale class."""
+    body = client.get("/activity").text
+    own = [row for row in rows_of(body) if "row--between" in row or "row--self" in row]
+
+    assert own, "the fixture has a transfer between two owned wallets"
+    assert 'colspan="2"' in own[0]
+
+
+def test_everything_an_event_says_starts_on_one_vertical(client):
+    """The direction badge was centred in a fixed box, so "IN" began seven
+    pixels right of "OUT" and the second line wandered against the first."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    narrow = css.split("@media (max-width: 860px) {")[1]
+
+    assert ".row[data-activity] .dir { min-width: 0; text-align: left; }" in narrow
+    assert ".row--more-of td { padding: 0 0 4px 68px; }" in narrow
+
+
+def test_the_hidden_count_is_not_explained_twice_on_a_phone(client):
+    """181 = 111 + 70 is one fact explaining another, and the explanation
+    crowds the thing it explains on the surface with the least room."""
+    css = pathlib.Path("app/web/static/app.css").read_text()
+    narrow = css.split("@media (max-width: 860px) {")[1]
+    assert ".dust-note__why { display: none; }" in narrow
+
+    # ...and is still there on the screen that has room for it.
+    body = client.get("/dust-note", params={"dust": ""}).text
+    assert "dust-note__why" in body or "is-empty" in body

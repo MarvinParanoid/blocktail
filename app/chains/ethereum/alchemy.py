@@ -10,18 +10,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime
 
 import httpx
 
 from app.chains.ethereum.chain import ZERO_ADDRESS, EthereumChain
-from app.models import NATIVE, AssetRef, Balance, Transfer, TransferKind
+from app.models import NATIVE, AssetRef, Balance, TransactionCost, Transfer, TransferKind
 
 log = logging.getLogger(__name__)
 
 _MAX_COUNT = "0x3e8"  # 1000, the documented per-page maximum
 _CATEGORIES = ["external", "internal", "erc20"]
-_RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+# 403 belongs here: Alchemy answers a burst past the plan's compute-per-second
+# ceiling with Forbidden rather than Too Many Requests, so treating it as a
+# permission failure would give up on something that succeeds a second later.
+_RETRY_STATUS = frozenset({403, 408, 425, 429, 500, 502, 503, 504})
+_THROTTLED = frozenset({403, 429})
 
 
 class ProviderError(RuntimeError):
@@ -57,8 +62,8 @@ class AlchemyProvider:
         url: str,
         *,
         timeout: float = 30.0,
-        max_retries: int = 4,
-        max_concurrency: int = 4,
+        max_retries: int = 5,
+        max_concurrency: int = 2,
         max_token_lookups: int = 200,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -94,6 +99,10 @@ class AlchemyProvider:
                     last_error = ProviderError(
                         f"{method}: HTTP {response.status_code} from provider"
                     )
+                    if response.status_code in _THROTTLED:
+                        # Backing off by the usual step just walks into the same
+                        # ceiling; a throttled caller has to actually wait.
+                        delay = max(delay, 2.0)
                 else:
                     response.raise_for_status()
                     body = response.json()
@@ -108,7 +117,9 @@ class AlchemyProvider:
                 last_error = exc
 
             if attempt < self._max_retries - 1:
-                await asyncio.sleep(delay)
+                # Jitter, so several stalled requests do not all resume together
+                # and reproduce the burst that got them throttled.
+                await asyncio.sleep(delay * (1 + random.random() * 0.4))
                 delay *= 2
 
         raise ProviderError(f"{method} failed after {self._max_retries} attempts: {last_error}")
@@ -126,6 +137,41 @@ class AlchemyProvider:
         if balance is None:
             raise ProviderError(f"eth_getBalance returned no result for {address}")
         return balance
+
+    async def get_transaction_cost(self, tx_hash: str) -> TransactionCost | None:
+        """Fee, gas and outcome, from the receipt.
+
+        Two calls, made only when someone opens a transaction: the receipt has
+        what was spent, and the transaction itself has the limit that was set —
+        which is the half that says whether the estimate was any good. A node
+        that has pruned either simply returns null, and the caller shows
+        nothing; a missing fee is not a zero fee.
+        """
+        receipt, transaction = await asyncio.gather(
+            self._rpc("eth_getTransactionReceipt", [tx_hash]),
+            self._rpc("eth_getTransactionByHash", [tx_hash]),
+            return_exceptions=True,
+        )
+        if isinstance(receipt, Exception) or not isinstance(receipt, dict):
+            return None
+
+        gas_used = _hex_to_int(receipt.get("gasUsed"))
+        price = _hex_to_int(receipt.get("effectiveGasPrice"))
+        if gas_used is None or price is None:
+            return None
+
+        gas_limit = None
+        if isinstance(transaction, dict):
+            gas_limit = _hex_to_int(transaction.get("gas"))
+
+        return TransactionCost(
+            fee_raw=gas_used * price,
+            gas_used=gas_used,
+            gas_limit=gas_limit,
+            # Pre-Byzantium receipts have no status field. Everything this app
+            # indexes is far newer, and a missing field is not a failure.
+            succeeded=_hex_to_int(receipt.get("status")) != 0,
+        )
 
     async def get_token_balances(self, address: str) -> list[Balance]:
         """Non-zero token balances.

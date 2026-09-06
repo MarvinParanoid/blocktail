@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, localcontext
 
 from app.chains import Chain
-from app.models import NATIVE, SyncStatus
+from app.models import NATIVE, SyncStatus, TransactionCost
 
 
 def format_amount(amount_raw: int | str, decimals: int, *, max_dp: int = 6) -> str:
@@ -155,7 +155,9 @@ class ActivityView:
     symbol: str
     asset_url: str | None
     kind_badge: str | None   # only set when the kind is not obvious from the row
+    kind_note: str | None    # the same fact in words, for the inspector
     value_text: str | None   # what the amount was worth, when the asset is priced
+    value_usd: Decimal | None  # the same, unformatted, for ranking
     tx_hash: str
     tx_short: str
     tx_url: str
@@ -175,10 +177,17 @@ def _party(
 ) -> Party:
     if not address:
         return Party("", "contract creation", "", "no recipient", "", False, False)
+
+    # Your names win. A wallet you monitor, then a label you wrote, and only
+    # then what the chain is commonly known to call the address — these are a
+    # fallback for counterparties nobody has named, never an override of one.
+    known = getattr(chain, "known_label", None)
     if account_name:
         display, labelled = account_name, True
     elif label:
         display, labelled = label, True
+    elif known and (name := known(address)):
+        display, labelled = name, True
     else:
         display, labelled = chain.shorten_address(address), False
     return Party(
@@ -241,16 +250,26 @@ def build_activity(
     # A native transfer is the default and a token transfer is evident from its
     # symbol; only an internal transfer tells the reader something they cannot
     # infer, so it is the only kind that earns a badge.
+    # "int" is short enough for a dense row and opaque on its own; the words
+    # go where there is room to read them.
     kind_badge = "int" if row["kind"] == "internal" else None
+    kind_note = (
+        "internal — ETH moved by the contract this transaction called, not by a"
+        " transfer you signed"
+        if row["kind"] == "internal"
+        else None
+    )
 
     # Valued at the current price, not the price at the time: this is a monitor,
     # not a ledger. It answers "how much is that" for a row you are looking at.
     value_text = None
+    value_usd = None
     if prices and (quote := prices.get(row["asset_id"])):
         with localcontext() as context:
             context.prec = 40
             amount = Decimal(int(row["amount_raw"])).scaleb(-row["decimals"])
-            value_text = format_money(amount * Decimal(quote["price"]))
+            value_usd = amount * Decimal(quote["price"])
+            value_text = format_money(value_usd)
 
     return ActivityView(
         id=row["id"],
@@ -270,7 +289,9 @@ def build_activity(
         symbol=row["symbol"],
         asset_url=_token_url(chain, contract),
         kind_badge=kind_badge,
+        kind_note=kind_note,
         value_text=value_text,
+        value_usd=value_usd,
         tx_hash=row["tx_hash"],
         tx_short=chain.shorten_tx_hash(row["tx_hash"]),
         tx_url=chain.explorer_tx_url(row["tx_hash"]),
@@ -311,16 +332,48 @@ def build_wallets(
     *,
     selected_id: int | None = None,
     prices: dict[int, sqlite3.Row] | None = None,
+    relevance: Relevance | None = None,
+    max_share: float = 0.9,
 ) -> list[WalletView]:
+    rules = relevance or Relevance()
     views: list[WalletView] = []
+
     for account in accounts:
-        value: Decimal | None = None
+        # Valued exactly as the panel values it. Two different sums for the same
+        # wallet — one in the sidebar, one in the summary — is a bug the reader
+        # has no way to resolve.
+        entries: list[tuple[Decimal | None, str, AssetTotal]] = []
+        contracts: dict[int, str] = {}
         for row in balances.get(account.id, []):
+            contracts[row["asset_id"]] = row["contract_address"]
+            value: Decimal | None = None
             if prices and (quote := prices.get(row["asset_id"])):
                 with localcontext() as context:
                     context.prec = 40
                     amount = Decimal(int(row["amount_raw"])).scaleb(-row["decimals"])
-                    value = (value or Decimal(0)) + amount * Decimal(quote["price"])
+                    value = amount * Decimal(quote["price"])
+            entries.append(
+                (
+                    value,
+                    row["symbol"],
+                    AssetTotal(
+                        asset_id=row["asset_id"],
+                        symbol=row["symbol"],
+                        amount_text="",
+                        value_text=None,
+                        is_native=row["contract_address"] == NATIVE,
+                        url=None,
+                    ),
+                )
+            )
+
+        implausible = implausible_assets(entries, contracts, rules, max_share)
+        priced = [
+            value
+            for value, _, asset in entries
+            if value is not None and asset.asset_id not in implausible
+        ]
+        total = sum(priced, Decimal(0)) if priced else None
 
         views.append(
             WalletView(
@@ -329,8 +382,8 @@ def build_wallets(
                 address=chain.display_address(account.address),
                 address_full=chain.display_address(account.address),
                 url=chain.explorer_address_url(account.address),
-                value_text=format_money_short(value),
-                value_exact=format_money(value),
+                value_text=format_money_short(total),
+                value_exact=format_money(total),
                 selected=account.id == selected_id,
                 is_owned=account.is_owned,
                 # The config file owns what it declares and would overwrite an
@@ -410,6 +463,9 @@ def build_status(
     elif age is not None and age > stale_after:
         state = "stale"
         detail = f"no successful sync for {relative_time(status.last_success_at, now=now)}"
+    elif age is not None and age > stale_after // 3:
+        # Not yet a problem worth words, but the dot can say it without one.
+        state, detail = "lagging", ""
     else:
         state, detail = "ok", ""
 
@@ -441,9 +497,42 @@ class AssetTotal:
     hidden: bool = False     # indexed and kept, just not worth showing by default
 
 
-def total_value_candidates(entries) -> int:
-    """How many assets carry a price at all."""
-    return sum(1 for item in entries if item[0] is not None)
+def implausible_assets(
+    entries: list[tuple[Decimal | None, str, AssetTotal]],
+    contracts: dict[int, str],
+    rules: Relevance,
+    max_share: float,
+) -> set[int]:
+    """Assets whose value is too large to believe, given what they are.
+
+    The case this exists for is a scam token with a nominal DEX quote and a
+    supply of 10^17, which made a real portfolio read $4.9 quadrillion. The case
+    it must *not* touch is a wallet that simply holds one thing: a stablecoin
+    balance is often the whole of it, and calling that implausible is worse than
+    the problem — so only assets nothing vouches for are ever candidates.
+    """
+    priced = [item for item in entries if item[0] is not None]
+    if not max_share or len(priced) < 2:
+        return set()
+
+    candidates = sorted(
+        (
+            item
+            for item in priced
+            if not item[2].is_native
+            and not rules.is_vouched_for(item[2].asset_id, contracts[item[2].asset_id])
+        ),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+    excluded: set[int] = set()
+    remaining = sum((item[0] for item in priced), Decimal(0))
+    for value, _, asset in candidates:
+        if remaining > 0 and value / remaining > Decimal(str(max_share)):
+            excluded.add(asset.asset_id)
+            remaining -= value
+    return excluded
 
 
 @dataclass(slots=True)
@@ -491,16 +580,30 @@ class Relevance:
     known: frozenset[str] = frozenset()      # contracts the chain is known for
     trusted: frozenset[str] = frozenset()    # contracts the user vouched for
     sent_asset_ids: frozenset[int] = frozenset()
+    impostor_asset_ids: frozenset[int] = frozenset()
     dust_below: Decimal = Decimal(1)
 
+    def is_vouched_for(self, asset_id: int, contract: str) -> bool:
+        """Something other than its own price says this asset is real.
+
+        "You sent it" is deliberately weaker than it looks: an ERC-20 contract
+        can emit a Transfer log with any `from` it likes, including your address,
+        and address-poisoning scams do exactly that. So an impostor overrides it.
+        """
+        if asset_id in self.impostor_asset_ids:
+            return False
+        if contract in self.trusted:
+            return True
+        return contract in self.known or asset_id in self.sent_asset_ids
+
     def is_relevant(self, asset_id: int, contract: str, value: Decimal | None) -> bool:
+        if asset_id in self.impostor_asset_ids:
+            return False   # a forged ticker is never worth a place, at any value
         if contract == NATIVE:
             return True
         if value is not None and value >= self.dust_below:
             return True
-        if contract in self.trusted or contract in self.known:
-            return True
-        return asset_id in self.sent_asset_ids
+        return self.is_vouched_for(asset_id, contract)
 
 
 def build_portfolio(
@@ -601,20 +704,15 @@ def build_portfolio(
             asset.hidden = True
             hidden += 1
 
+    contracts = {asset_id: entry["contract"] for asset_id, entry in totals.items()}
+    implausible = implausible_assets(entries, contracts, rules, max_share)
     excluded: list[str] = []
-    if max_share and total_value_candidates(entries) > 1:
-        ranked = sorted(
-            (item for item in entries if item[0] is not None and not item[2].is_native),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-        everything = sum((item[0] for item in entries if item[0] is not None), Decimal(0))
-        for value, _, asset in ranked:
-            if everything > 0 and value / everything > Decimal(str(max_share)):
-                excluded.append(asset.symbol)
-                asset.excluded = True
+    for value, _, asset in entries:
+        if asset.asset_id in implausible:
+            asset.excluded = True
+            excluded.append(asset.symbol)
+            if value is not None and not asset.is_native:
                 token_value -= value
-                everything -= value
 
     # Shown first, largest holding first; then the priced-but-unknown; hidden
     # dust last, so revealing it never rearranges what was already on screen.
@@ -669,3 +767,156 @@ def build_portfolio(
         price_age_text=relative_time(priced_at, now=now) if priced_at else None,
         prices_stale=bool(priced_at and now - priced_at > stale_after),
     )
+
+
+# --------------------------------------------------------------- inspector
+
+
+@dataclass(slots=True)
+class TransactionView:
+    """One Ethereum transaction and every movement it produced.
+
+    The feed is a list of transfers, which is the right unit for scanning: a
+    swap really did move four different things. But those four rows share one
+    cause, and the feed cannot say so without becoming a tree. So the cause is
+    a place you can go to, and this is it — the amounts stay separate, because
+    adding a token to an unrelated token is not a sum anyone asked for.
+    """
+
+    chain_id: str
+    chain_name: str
+    tx_hash: str
+    tx_short: str
+    tx_url: str
+    block_number: int
+    block_text: str
+    block_url: str
+    day_text: str
+    time_text: str
+    iso: str
+    age_text: str
+    confirmations: int | None
+    confirmations_text: str
+    transfers: list[ActivityView]
+    selected_id: int
+    fee_text: str | None = None        # what it cost, in the native asset
+    fee_value_text: str | None = None  # and in money, when the asset is priced
+    gas_text: str | None = None        # used / limit
+    succeeded: bool | None = None
+
+    @property
+    def count(self) -> int:
+        return len(self.transfers)
+
+
+def build_transaction(
+    rows: list[sqlite3.Row],
+    chain: Chain,
+    *,
+    selected_id: int,
+    scope: set[int] | None = None,
+    prices: dict[int, sqlite3.Row] | None = None,
+    head_block: int | None = None,
+    now: int | None = None,
+    cost: TransactionCost | None = None,
+    native_price: Decimal | None = None,
+) -> TransactionView:
+    transfers = [build_activity(row, chain, scope, prices) for row in rows]
+    first = transfers[0]
+
+    depth = None if not head_block else max(0, head_block - first.block_number + 1)
+
+    # Absent throughout when the chain could not say: a fee shown as zero is a
+    # claim, and the wrong one.
+    fee_text = fee_value_text = gas_text = None
+    if cost is not None:
+        with localcontext() as context:
+            context.prec = 40
+            fee = Decimal(cost.fee_raw).scaleb(-chain.native_decimals)
+            fee_text = (
+                f"{format_amount(cost.fee_raw, chain.native_decimals)}"
+                f" {chain.native_symbol}"
+            )
+            if native_price is not None:
+                fee_value_text = format_money(fee * native_price)
+        gas_text = f"{cost.gas_used:,}"
+        if cost.gas_limit:
+            gas_text += f" / {cost.gas_limit:,}"
+
+    return TransactionView(
+        chain_id=first.chain_id,
+        chain_name=chain.display_name,
+        tx_hash=first.tx_hash,
+        tx_short=first.tx_short,
+        tx_url=first.tx_url,
+        block_number=first.block_number,
+        block_text=f"{first.block_number:,}",
+        block_url=first.block_url,
+        day_text=first.day_text,
+        time_text=first.time_text,
+        iso=first.iso,
+        age_text=relative_time(first.timestamp, now=now),
+        confirmations=depth,
+        confirmations_text="—" if depth is None else f"{depth:,}",
+        transfers=transfers,
+        selected_id=selected_id,
+        fee_text=fee_text,
+        fee_value_text=fee_value_text,
+        gas_text=gas_text,
+        succeeded=None if cost is None else cost.succeeded,
+    )
+
+
+# ------------------------------------------------------------- grouping
+
+
+@dataclass(slots=True)
+class TransactionGroup:
+    """The transfers of one transaction, as one entry in the feed.
+
+    A swap is one thing that happened and four rows in the index, and four rows
+    minutes apart in the feed is how a feed misleads. They are still four rows —
+    the amounts are not ours to add together, and an unrelated token added to
+    another is not a sum — but they arrive as one entry, led by the transfer
+    that carries the most value, with the rest folded behind it.
+    """
+
+    primary: ActivityView
+    siblings: list[ActivityView]
+
+    @property
+    def is_group(self) -> bool:
+        return bool(self.siblings)
+
+    @property
+    def extra(self) -> int:
+        return len(self.siblings)
+
+    @property
+    def rows(self) -> list[ActivityView]:
+        return [self.primary, *self.siblings]
+
+
+def group_by_transaction(activities: list[ActivityView]) -> list[TransactionGroup]:
+    """Fold each transaction's transfers into one entry, in feed order.
+
+    The group keeps the position of its first transfer, so nothing jumps up the
+    page. Which transfer leads is decided by value, because that is the one a
+    reader is looking for; with nothing priced, on-chain order decides, since
+    guessing between two unpriced amounts of different assets is worse than not
+    guessing at all.
+    """
+    order: list[str] = []
+    by_tx: dict[str, list[ActivityView]] = {}
+    for activity in activities:
+        if activity.tx_hash not in by_tx:
+            order.append(activity.tx_hash)
+            by_tx[activity.tx_hash] = []
+        by_tx[activity.tx_hash].append(activity)
+
+    groups = []
+    for tx_hash in order:
+        rows = by_tx[tx_hash]
+        lead = max(range(len(rows)), key=lambda i: (rows[i].value_usd or Decimal(0), -i))
+        groups.append(TransactionGroup(rows[lead], [r for i, r in enumerate(rows) if i != lead]))
+    return groups

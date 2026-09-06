@@ -1,4 +1,15 @@
-<div id="topline" class="topline" hx-get="/status" hx-trigger="every 5s, wallet-changed from:body" hx-swap="outerHTML">
+<div id="topline" class="topline" hx-get="/status"
+     hx-trigger="every 5s, wallet-changed from:body, refreshWallets from:body"
+     hx-include="#wallet-value, #scope-value" hx-swap="outerHTML">
+
+  {# The scope belongs in the one bar that never scrolls away. On a narrow
+     screen this is that bar — the summary panel cannot be it, because a sticky
+     child stops sticking the moment its parent has scrolled past. #}
+  <button type="button" class="topline__scope" onclick="openScopeSheet()">
+    <span>{{ scope_label }}</span>
+    <span class="scope-trigger__caret" aria-hidden="true">&#9662;</span>
+  </button>
+
   <span class="summary" {% if summary.monitored_count != summary.account_count %}
         title="Watched accounts are indexed but never counted towards the total"{% endif %}>
     {{ summary.count_text }}
@@ -6,7 +17,7 @@
     <span class="num">{{ summary.native_total }}</span> {{ summary.native_symbol }}
   </span>
 
-  <span class="status status--{{ status.state }}">
+  <span class="status status--{{ status.state }}" data-age="{{ status.updated_text }}">
     <span class="status__dot" aria-hidden="true"></span>
     <span class="status__line">
       {{ status.chain_name }}

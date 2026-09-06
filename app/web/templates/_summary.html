@@ -1,6 +1,11 @@
-<section id="summary" class="summary-panel"
+<section id="summary" class="summary-panel{{ ' scope-is-panel' if scope_is_panel }}"
          hx-get="/summary" hx-trigger="every 30s, refreshWallets from:body, wallet-changed from:body"
          hx-include="#wallet-value, #scope-value" hx-swap="outerHTML">
+
+  {# Head and scope selector are one bar: on a narrow screen it is what stays
+     on screen while the feed scrolls, and it must be that bar alone — sticking
+     the whole panel drags the holdings along and buries the filters. #}
+  <div class="summary__bar">
 
   {# The address and the badge are siblings of the toggle, not children of it:
      a button inside a button is invalid HTML, and the parser closes the outer
@@ -11,6 +16,9 @@
       <span class="summary__chevron" aria-hidden="true"></span>
       <span class="summary__scope">{{ portfolio.scope }}</span>
       {% if portfolio.scope_count %}<span class="summary__count">{{ portfolio.scope_count }}</span>{% endif %}
+      {# Inside the button so that on a narrow screen the name, what kind of
+         address it is, and the caret that opens the sheet read as one line. #}
+      {% if portfolio.scope_badge %}<span class="summary__badge">{{ portfolio.scope_badge }}</span>{% endif %}
       <span class="summary__total num">{{ portfolio.total_text or '—' }}</span>
       <span class="summary__brief">
         <span class="num">{{ portfolio.native_amount_text }}</span> {{ portfolio.native_symbol }}
@@ -27,7 +35,6 @@
               onclick="copyAddress('{{ portfolio.scope_address }}', this)"
               title="{{ portfolio.scope_address }} — click to copy">{{ portfolio.scope_meta }}</button>
     {% endif %}
-    {% if portfolio.scope_badge %}<span class="summary__badge">{{ portfolio.scope_badge }}</span>{% endif %}
   </div>
 
   {# Narrow screens have no sidebar; this is how the scope is chosen there. #}
@@ -36,9 +43,11 @@
     <span class="scope-trigger__caret" aria-hidden="true">&#9662;</span>
   </button>
 
+  </div>
+
   <div class="summary__body" id="summary-body">
     <div class="summary__figures">
-      <div class="figure">
+      <div class="figure figure--total">
         <span class="figure__label">Total value</span>
         <span class="figure__main num">{{ portfolio.total_text or '—' }}</span>
         {% if not portfolio.priced %}
@@ -50,24 +59,14 @@
                 title="This asset alone would be almost the whole total — usually a scam token with a nominal quote and an absurd supply. Add its contract to ignore_assets, or raise VALUE_MAX_SHARE_PERCENT.">
             {{ portfolio.excluded | join(', ') }} excluded
           </span>
-        {% elif portfolio.hidden or portfolio.unpriced %}
-          {# Two different situations, and conflating them read as "the price
-             feed is broken": dust nobody asked for, versus a real holding whose
-             price could not be found. #}
-          <span class="figure__note">
-            {% if portfolio.hidden %}
-              <button type="button" class="linkish" onclick="toggleHiddenTokens()"
-                      title="Kept and indexed, just not shown: no value, not a token this chain is known for, and never sent by your own wallets.">
-                {{ portfolio.hidden }} token{{ '' if portfolio.hidden == 1 else 's' }} hidden
-              </button>
-            {% endif %}
-            {%- if portfolio.hidden and portfolio.unpriced %}<span class="sep">&middot;</span>{% endif %}
-            {%- if portfolio.unpriced %} {{ portfolio.unpriced }} unpriced{% endif %}
-          </span>
+        {% elif portfolio.unpriced %}
+          {# A real holding whose price could not be found. Kept apart from
+             filtering: read together they said "the price feed is broken". #}
+          <span class="figure__note">{{ portfolio.unpriced }} unpriced</span>
         {% endif %}
       </div>
 
-      <div class="figure">
+      <div class="figure figure--native">
         <span class="figure__label">Native</span>
         <span class="figure__main num">{{ portfolio.native_amount_text }}
           <span class="figure__unit">{{ portfolio.native_symbol }}</span></span>
@@ -76,11 +75,23 @@
         {% endif %}
       </div>
 
-      <div class="figure">
+      <div class="figure figure--tokens">
         <span class="figure__label">Tokens</span>
         <span class="figure__main num">{{ portfolio.token_value_text or '—' }}</span>
+        {# Filtering belongs to the token count, not to the total: under
+           TOTAL VALUE it read as though the hidden ones were missing from
+           $24,761, when the whole point is that they were never in it. #}
         <span class="figure__note">
-          {{ portfolio.token_count }} token{{ '' if portfolio.token_count == 1 else 's' }}
+          {% if portfolio.hidden %}
+            {{ portfolio.token_count }} shown <span class="sep">&middot;</span>
+            {{ portfolio.hidden }} hidden
+            <button type="button" class="linkish" onclick="toggleHiddenTokens()"
+                    title="Dust and tokens nothing vouches for: kept and indexed, never counted towards the total.">
+              <span class="when-hidden">Show</span><span class="when-shown">Hide</span>
+            </button>
+          {% else %}
+            {{ portfolio.token_count }} token{{ '' if portfolio.token_count == 1 else 's' }}
+          {% endif %}
         </span>
       </div>
     </div>
@@ -88,8 +99,10 @@
     {% if portfolio.assets %}
       <div class="holdings-row">
         <ul class="holdings">
+          {% set ranks = namespace(shown=0) %}
           {% for asset in portfolio.assets %}
-            <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--excluded' if asset.excluded }}{{ ' holding--hidden' if asset.hidden }}">
+            {% if not asset.is_native and not asset.hidden %}{% set ranks.shown = ranks.shown + 1 %}{% endif %}
+            <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--excluded' if asset.excluded }}{{ ' holding--hidden' if asset.hidden }}{{ ' holding--compact' if ranks.shown <= 2 and not asset.is_native and not asset.hidden }}">
               <a class="holding__hit" href="?asset={{ asset.asset_id }}"
                  hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
                  hx-include="#wallet-value, #scope-value" hx-on:click="filterByAsset('{{ asset.asset_id }}')"
@@ -104,6 +117,21 @@
             <li class="holding holding--more">+{{ portfolio.hidden_assets }} more</li>
           {% endif %}
         </ul>
+
+        {# A phone gives the portfolio a fixed three lines whether the wallet
+           holds three tokens or three hundred, and the rest open as a sheet
+           rather than growing the header downwards. "More" is deliberately not
+           "hidden": hidden is what the spam filter does, and one word for two
+           different things is how a reader stops trusting either. #}
+        {% set overflow = portfolio.assets | length - 3 %}
+        {% if overflow > 0 or portfolio.hidden %}
+          <button type="button" class="holdings__more"
+                  hx-get="/holdings" hx-target="#wallet-dialog-body" hx-swap="innerHTML"
+                  hx-include="#wallet-value, #scope-value"
+                  hx-on::after-request="showWalletDialog()">
+            {{ portfolio.assets | length - 2 }} more assets
+          </button>
+        {% endif %}
 
         {# Price freshness is a footnote on the valuation, not a fourth metric. #}
         {% if portfolio.price_age_text %}

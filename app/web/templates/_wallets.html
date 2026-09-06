@@ -58,6 +58,16 @@
     </a>
   {% endmacro %}
 
+  {# Returning to everything used to mean clicking the selected group again to
+     toggle it off — discoverable only once you had already found it. On a
+     phone, where this list is the only scope control there is, it needs to be
+     a place you can go rather than a state you undo. #}
+  <a class="wallets__group wallets__group--all{{ ' is-selected' if not selected_id and scope == 'all' }}"
+     href="?" hx-get="/activity" hx-target="#feed-body" hx-swap="innerHTML" hx-include="this"
+     hx-on:click="selectScope('all')" title="Every monitored address">
+    <span>All activity</span>
+  </a>
+
   {# With nothing watched there is only one group, so it needs no heading at
      all. With something watched the two need to contrast, and each heading is
      also its scope control. #}

@@ -60,8 +60,10 @@ class Settings:
     reorg_depth: int
     max_token_balances: int
     max_token_lookups: int
+    provider_concurrency: int
     stale_after: int
     price_refresh: int
+    balance_refresh: int
     prices_enabled: bool
     value_max_share: float
     dust_below_usd: Decimal
@@ -135,8 +137,12 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         # An exchange address can hold thousands of tokens; each needs a
         # metadata lookup, so the number of them is bounded.
         max_token_lookups=_env_int(env, "MAX_TOKEN_LOOKUPS", 200, minimum=1),
+        # A free provider tier caps compute per second, not just per month. Two
+        # requests in flight stays inside it; raise this on a paid plan.
+        provider_concurrency=_env_int(env, "PROVIDER_CONCURRENCY", 2, minimum=1),
         stale_after=_env_int(env, "STALE_AFTER_SECONDS", max(180, interval * 3), minimum=30),
         price_refresh=_env_int(env, "PRICE_REFRESH_SECONDS", 300, minimum=30),
+        balance_refresh=_env_int(env, "BALANCE_REFRESH_SECONDS", 600, minimum=0),
         # A scam token can have a nominal DEX quote and an absurd supply, which
         # is enough to swallow a portfolio total whole. 0 disables the guard.
         value_max_share=min(1.0, _env_int(env, "VALUE_MAX_SHARE_PERCENT", 90, minimum=0) / 100),

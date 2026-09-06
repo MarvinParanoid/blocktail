@@ -1,14 +1,27 @@
 {% set ns = namespace(day=previous_day) %}
-{% for activity in activities %}
-  {% if activity.day_key != ns.day %}
+{% set oldest_cursor = (activities[-1].timestamp ~ '_' ~ activities[-1].id) if activities else '' %}
+
+{# One transaction is one entry. Its other transfers are still rows — the
+   amounts are not ours to add together — but they are folded behind the one
+   that carries the value, and the feed stops reading as several unrelated
+   things that happened at the same second. #}
+{% for group in groups %}
+  {% for activity in group.rows %}
+  {% set is_lead = loop.first %}
+  {% if is_lead and activity.day_key != ns.day %}
     {% set ns.day = activity.day_key %}
     <tr class="row row--day"><td colspan="7"><span class="day">{{ activity.day_text }}</span></td></tr>
   {% endif %}
 
   {% set own = activity.direction in ('between', 'self') %}
-  <tr class="row row--{{ activity.direction }}" data-activity="{{ activity.id }}"
-      hx-get="/activity/{{ activity.id }}" hx-target="#activity-sheet-body" hx-swap="innerHTML"
-      hx-trigger="click[isNarrow()]" hx-on::after-request="openActivitySheet()">
+  {# Clicking the row opens the transaction behind it. The filter and explorer
+     links inside are excluded by the trigger filter rather than by a
+     stopPropagation on each one — one rule instead of five. #}
+  <tr class="row row--{{ activity.direction }}{{ ' row--folded' if not is_lead }}"
+      data-activity="{{ activity.id }}" data-tx="{{ activity.tx_hash }}"
+      hx-get="/tx/{{ activity.id }}" hx-target="#inspector-body" hx-swap="innerHTML"
+      hx-trigger="click[!event.target.closest('a,button')]"
+      hx-on::after-request="openInspector(this)">
     <td class="cell-time"><span class="time" title="{{ activity.iso }}">{{ activity.time_text }}</span></td>
 
     {# An own transfer has no counterparty, so it spends the direction column on
@@ -39,6 +52,13 @@
       {% if activity.counterparty and activity.counterparty.address %}
         {% set party = activity.counterparty %}
         <span class="party">
+          {# Narrow screens fold the row into two lines, and this second line
+             becomes "who". With one wallet in scope its name is on every row
+             and says nothing, so only the arrow survives; with several, the
+             row has to name which one. #}
+          <span class="party__from">{{ activity.wallet }}</span
+          ><span class="party__arrow" aria-hidden="true"
+            >{{ '&larr;' | safe if activity.direction == 'in' else '&rarr;' | safe }}</span>
           {# Clicking a counterparty shows every dealing your wallets have had
              with it. The explorer is one deliberate click further out. #}
           <a class="{{ 'label' if party.is_labelled else 'addr' }}" href="?q={{ party.address }}"
@@ -64,6 +84,35 @@
 
     <td class="cell-fill"></td>
   </tr>
+
+  {% if is_lead and group.is_group %}
+    {# The affordance is a statement first: these belong together. Pressing it
+       shows them here; pressing the row opens the whole transaction. #}
+    <tr class="row row--more-of{{ ' row--single-more' if group.extra == 1 }}"
+        data-tx="{{ activity.tx_hash }}">
+      <td colspan="7">
+        <button type="button" class="foldout" onclick="toggleFold(this)"
+                aria-expanded="false">
+          {# Not "+": beside an amount that reads as an instruction to add
+             0.36804 to the 200 above it, which is the one thing this feed
+             refuses to do. "↳" says the transfer is inside the transaction. #}
+          <span class="foldout__mark" aria-hidden="true">&#8627;</span>
+          {% if group.extra == 1 %}
+            {% set other = group.siblings[0] %}
+            <span class="foldout__one">
+              <span class="num">{{ other.amount_text }}</span>
+              <span class="sym">{{ other.symbol }}</span>
+              <span class="arrow" aria-hidden="true">&rarr;</span>
+              <span class="foldout__party">{{ other.counterparty.display if other.counterparty else other.target.display }}</span>
+            </span>
+          {% else %}
+            <span class="foldout__count">{{ group.extra }} more transfers</span>
+          {% endif %}
+        </button>
+      </td>
+    </tr>
+  {% endif %}
+  {% endfor %}
 {% else %}
   {% if not is_page %}
     <tr class="row row--empty">
@@ -77,6 +126,23 @@
     </tr>
   {% endif %}
 {% endfor %}
+
+{% if not next_cursor and history_floor %}
+  {# The feed ends where the backfill window was set, not where the history
+     does. Saying so, and offering to go further, beats an unexplained stop. #}
+  <tr class="row row--older">
+    <td colspan="7">
+      <form method="post" action="/history/older"
+            hx-post="/history/older" hx-target="closest tr" hx-swap="outerHTML"
+            hx-indicator="closest tr" hx-include="#filters">
+        <input type="hidden" name="before" value="{{ oldest_cursor or '' }}">
+        <input type="hidden" name="after_day" value="{{ ns.day or '' }}">
+        <button type="submit" class="linkish">Load {{ older_days }} more days</button>
+        <span class="row--older__hint">indexed back to block #{{ '{:,}'.format(history_floor) }}</span>
+      </form>
+    </td>
+  </tr>
+{% endif %}
 
 {% if next_cursor %}
   <tr class="row row--more" id="feed-more"

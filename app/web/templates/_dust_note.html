@@ -1,0 +1,25 @@
+{# Its own fragment because it is not inside the feed body htmx swaps, so it
+   went stale after every filter change — the toggle most visibly, but the count
+   was wrong after switching wallets too. #}
+{% set hidden_total = dust_hidden + unverified_hidden %}
+<p id="dust-note" class="dust-note{{ ' is-empty' if not (hidden_total or filters.show_dust) }}"
+   hx-get="/dust-note" hx-trigger="filtersApplied from:body" hx-include="#filters"
+   hx-swap="outerHTML">
+  {% if filters.show_dust %}
+    Showing dust and unverified token transfers.
+    <button type="button" class="linkish" onclick="toggleDust(false)">Hide</button>
+  {% elif hidden_total %}
+    {# Two reasons, named separately: dust is small, unverified is unknown, and
+       a 0.87 ETH transfer is neither. #}
+    {# One word for the affordance, two numbers for the reason: they are
+       different accusations, and "noisy" is the only honest word that covers
+       both without pretending they are the same one. #}
+    {{ '{:,}'.format(hidden_total) }} noisy transfer{{ '' if hidden_total == 1 else 's' }} hidden
+    <span class="dust-note__why">
+      {%- if dust_hidden %}{{ '{:,}'.format(dust_hidden) }} dust{% endif -%}
+      {%- if dust_hidden and unverified_hidden %} · {% endif -%}
+      {%- if unverified_hidden %}{{ '{:,}'.format(unverified_hidden) }} unverified{% endif -%}
+    </span>
+    <button type="button" class="linkish" onclick="toggleDust(true)">Show</button>
+  {% endif %}
+</p>

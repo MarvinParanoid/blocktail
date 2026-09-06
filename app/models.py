@@ -78,6 +78,22 @@ class Balance:
 
 
 @dataclass(frozen=True, slots=True)
+class TransactionCost:
+    """What a transaction cost to execute, as the chain reports it.
+
+    Not indexed: it is read on demand when someone opens a transaction, because
+    it is the only thing about a transfer that no amount of transfer data can
+    tell you, and polling for it on every row we store would be a call per row
+    for a number almost nobody looks at.
+    """
+
+    fee_raw: int          # in the native asset's smallest unit
+    gas_used: int
+    gas_limit: int | None  # None when the transaction itself was not read
+    succeeded: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Account:
     """A monitored account (a "wallet" in the UI).
 
@@ -109,4 +125,5 @@ class SyncStatus:
     last_attempt_at: int | None = None
     last_error: str | None = None
     backfill_done: bool = False
+    requested_from_block: int | None = None
     activity_count: int = 0

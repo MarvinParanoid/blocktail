@@ -9,6 +9,8 @@ being named in `trusted_assets` in the config.
 
 from __future__ import annotations
 
+import unicodedata
+
 KNOWN_TOKENS: dict[str, str] = {
     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
     "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
@@ -45,3 +47,92 @@ KNOWN_TOKENS: dict[str, str] = {
 
 def is_known(contract_address: str) -> bool:
     return contract_address.lower() in KNOWN_TOKENS
+
+
+# Digits and punctuation that stand in for letters in a spoofed ticker.
+_LOOKALIKES = str.maketrans({"0": "O", "1": "I", "5": "S", "$": "S", "8": "B", "|": "I"})
+
+# Cyrillic and Greek letters that are indistinguishable from Latin ones in every
+# font a browser will pick. Decomposition does not touch these — they are
+# separate letters, not accented Latin — so they have to be mapped by hand, or
+# they get dropped and `ÚЅDТ` quietly reduces to `UD` instead of `USDT`.
+_CONFUSABLES = str.maketrans(
+    {
+        "А": "A", "В": "B", "С": "C", "Е": "E", "Н": "H", "І": "I", "Ј": "J",
+        "К": "K", "М": "M", "О": "O", "Р": "P", "Ѕ": "S", "Т": "T", "Х": "X",
+        "У": "Y", "Ү": "Y", "а": "A", "е": "E", "о": "O", "р": "P", "с": "C",
+        "х": "X", "ѕ": "S", "і": "I",
+        "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
+        "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+        "ο": "O", "ν": "V",
+    }
+)
+_KNOWN_SYMBOLS = {symbol.upper() for symbol in KNOWN_TOKENS.values()}
+
+
+def normalise_symbol(symbol: str) -> str:
+    """Reduce a ticker to what it looks like at a glance.
+
+    Strips combining marks and accents, folds the digits and punctuation that
+    stand in for letters, and drops everything else. `Ụ᠋5DT` and `U$DT` both
+    come out as `USDT`.
+    """
+    # Confusables first: NFKD leaves them alone, so mapping afterwards is too
+    # late — the non-ASCII filter would already have thrown them away.
+    return "".join(
+        c for c in _visible(symbol).upper().translate(_LOOKALIKES)
+        if c.isascii() and c.isalnum()
+    )
+
+
+def _visible(symbol: str) -> str:
+    """The symbol with accents, invisible marks and formatting characters gone."""
+    folded = unicodedata.normalize("NFKD", symbol.translate(_CONFUSABLES))
+    return "".join(
+        c for c in folded
+        if not unicodedata.combining(c) and unicodedata.category(c) not in {"Mn", "Cf"}
+    )
+
+
+def impersonates_known(symbol: str, contract_address: str) -> bool:
+    """A ticker that reads as a token this chain is known for, from a contract
+    that is not it — `Ụ᠋5DT` beside the real USDT."""
+    if contract_address.lower() in KNOWN_TOKENS:
+        return False
+    return normalise_symbol(symbol) in _KNOWN_SYMBOLS
+
+
+# Long enough for the longest honest ticker anyone actually uses, short enough
+# that a sentence cannot hide under it.
+MAX_TICKER_LENGTH = 12
+
+
+def looks_forged(symbol: str, contract_address: str) -> bool:
+    """Whether a ticker is built to be mistaken for something else.
+
+    Enumerating lookalike characters is a race that cannot be won: live data
+    turned up Cyrillic, Greek, Armenian, Lisu, Canadian syllabics and
+    mathematical symbols, all rendering as plain Latin letters. So the test is
+    inverted — a ticker on this chain is ASCII, and one that is not, from a
+    contract nobody knows, is trying to look like something.
+
+    Plain ASCII is not proof of honesty, so two more things a ticker is not:
+    a sentence, and an advertisement. Live data held a contract calling itself
+    "Tether USDT" — every character Latin, and the whole point of the name is
+    to be read as the real one — beside "! bimarket.io - World Cup binary
+    markets". Real tickers are short and unspaced, which is what makes both
+    tests safe: no legitimate ERC-20 symbol on this chain has a space in it,
+    and none runs to forty characters.
+
+    Deliberately not a judgement about worth. A token can be worthless and
+    honest; this is about a name chosen to deceive.
+    """
+    if contract_address.lower() in KNOWN_TOKENS:
+        return False
+    if impersonates_known(symbol, contract_address):
+        return True
+
+    visible = _visible(symbol)
+    if any(not c.isascii() for c in visible):
+        return True
+    return any(c.isspace() for c in visible) or len(visible.strip()) > MAX_TICKER_LENGTH

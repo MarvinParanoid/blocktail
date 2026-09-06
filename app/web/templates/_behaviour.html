@@ -42,15 +42,33 @@
     const direction = filters.querySelector('input[name="direction"]:checked');
     const segment = filters.querySelector('.field--dir');
     if (segment) segment.classList.toggle('is-active', !!direction && direction.value !== 'all');
+
+    // A search in force is never collapsed behind the magnifier: a filter you
+    // cannot see is a filter you will not think to clear.
+    filters.classList.toggle('has-search', !!document.getElementById('search').value);
+  }
+
+  // Which columns a row needs depends on the scope, and the scope changes
+  // without the page being rendered again: htmx swaps the feed and leaves the
+  // container's server-rendered class behind. A stale `one-wallet` hides a
+  // cell that spans two columns on transfers between your own wallets, which
+  // takes the rest of that row's layout with it.
+  function syncScopeClass() {
+    const layout = document.querySelector('.layout');
+    if (!layout) return;
+    const wallet = document.getElementById('wallet-value');
+    layout.classList.toggle('one-wallet', !!(wallet && wallet.value));
   }
 
   function afterFilterChange() {
     document.body.dataset.paged = '';
     syncActiveFilters();
+    syncScopeClass();
     setTimeout(() => { syncUrl(); document.body.dispatchEvent(new Event('refreshWallets')); }, 0);
   }
 
   syncActiveFilters();
+  syncScopeClass();
 
   // A narrow screen is not a small desktop: it has no sidebar, its feed rows
   // are a log rather than a table, and rows open their technical detail.
@@ -66,25 +84,49 @@
     document.querySelector('.scrim').hidden = true;
   }
 
-  const activitySheet = document.getElementById('activity-sheet');
-  function openActivitySheet() { if (!activitySheet.open) activitySheet.showModal(); }
-  function closeActivitySheet() { activitySheet.close(); }
+  // --- transaction inspector ---------------------------------------------
+
+  // Docked beside the feed on a wide screen and docked to the bottom on a
+  // narrow one — one component either way. It is deliberately not a modal:
+  // the point of an inspector is that you can keep reading what it inspects.
+  function openInspector(row) {
+    document.documentElement.classList.add('inspector-open');
+    document.querySelectorAll('.row.is-open').forEach((r) => r.classList.remove('is-open'));
+    if (row) row.classList.add('is-open');
+    if (isNarrow()) document.querySelector('.scrim').hidden = false;
+  }
+
+  function closeInspector() {
+    document.documentElement.classList.remove('inspector-open');
+    document.querySelectorAll('.row.is-open').forEach((r) => r.classList.remove('is-open'));
+    if (!document.documentElement.classList.contains('scope-open')) {
+      document.querySelector('.scrim').hidden = true;
+    }
+  }
+
+  function closeSheets() { closeScopeSheet(); closeInspector(); }
 
   document.addEventListener('keydown', (evt) => {
-    if (evt.key === 'Escape') closeScopeSheet();
+    if (evt.key !== 'Escape') return;
+    // Innermost first: Escape should not dismiss everything at once.
+    if (document.documentElement.classList.contains('inspector-open')) closeInspector();
+    else closeScopeSheet();
   });
 
   // --- wallet dialog -----------------------------------------------------
   const walletDialog = document.getElementById('wallet-dialog');
 
+  // The dialog is a container; what goes in it is fetched by whoever opens it.
+  function showWalletDialog() {
+    document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));
+    if (!walletDialog.open) walletDialog.showModal();
+  }
+
   function openWalletDialog(id) {
     // The form is rendered server-side so the dialog itself holds no state.
     htmx.ajax('GET', '/wallets/form' + (id ? '?id=' + id : ''),
               { target: '#wallet-dialog-body', swap: 'innerHTML' })
-      .then(() => {
-        document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));
-        if (!walletDialog.open) walletDialog.showModal();
-      });
+      .then(showWalletDialog);
   }
 
   function closeWalletDialog() {
@@ -136,6 +178,37 @@
 
   // Holdings panel: collapsed state lives on <html> so it survives every
   // fragment swap, and in localStorage so it survives a reload.
+  // The same button, two jobs. On a narrow screen the head names the scope and
+  // opens the sheet; on a wide one the sidebar does that and the head folds the
+  // holdings away instead.
+  // The rest of a transaction's transfers are already in the page; this only
+  // decides whether they are on screen.
+  function toggleFold(button) {
+    const open = button.getAttribute('aria-expanded') !== 'true';
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const tx = button.closest('tr').dataset.tx;
+    for (const row of document.querySelectorAll('.row--folded[data-tx="' + tx + '"]')) {
+      row.classList.toggle('is-shown', open);
+    }
+  }
+
+  // Search is a mode on a phone, not a third row that is always there.
+  function toggleSearch(open) {
+    const bar = document.getElementById('filters');
+    bar.classList.toggle('is-searching', open);
+    if (open) document.getElementById('search').focus();
+  }
+
+  // Closing the box clears the search: leaving a filter in force behind a
+  // button the reader just dismissed is how a feed silently lies about itself.
+  function closeSearch() {
+    const box = document.getElementById('search');
+    const had = !!box.value;
+    box.value = '';
+    toggleSearch(false);
+    if (had) { htmx.trigger(box, 'change'); afterFilterChange(); }
+  }
+
   function toggleSummary() {
     const collapsed = document.documentElement.classList.toggle('summary-collapsed');
     try { localStorage.setItem('blocktail.summary.collapsed', collapsed ? '1' : '0'); } catch (e) {}
@@ -177,6 +250,16 @@
     afterFilterChange();
   }
 
+  // A swap replaces every <tr>, so the marker on the open row has to be put
+  // back — otherwise the inspector points at a row that no longer looks open.
+  document.body.addEventListener('htmx:afterSwap', (evt) => {
+    if (evt.target.id !== 'feed-body') return;
+    const open = document.getElementById('inspector-body').querySelector('.xfer.is-current');
+    if (!open) return;
+    const id = open.closest('.insp')?.dataset.selected;
+    if (id) document.querySelector('.row[data-activity="' + id + '"]')?.classList.add('is-open');
+  });
+
   function selectScope(scope) {
     document.getElementById('wallet-value').value = '';
     document.getElementById('scope-value').value = scope;
@@ -200,6 +283,9 @@
   function onFiltered(evt) {
     syncUrl();
     syncActiveFilters();
+    // Anything outside the swapped feed that depends on the filters — the line
+    // saying what is hidden — refreshes off this.
+    document.body.dispatchEvent(new Event('filtersApplied'));
     const trigger = evt.detail.requestConfig && evt.detail.requestConfig.triggeringEvent;
     if (!trigger || trigger.type !== 'refreshFeed') {
       document.body.dispatchEvent(new Event('refreshWallets'));

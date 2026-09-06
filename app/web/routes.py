@@ -15,15 +15,19 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from app.chains import UnknownChainError, get_chain, supported_chains
-from app.chains.ethereum.known_assets import KNOWN_TOKENS
 from decimal import Decimal
 
+from app.chains.ethereum.known_assets import KNOWN_TOKENS, looks_forged
+
 from app.models import NATIVE, Direction, Scope
+from app.web.assets import static_url
 from app.web.format import (
     Relevance,
     build_activity,
     build_portfolio,
     build_status,
+    build_transaction,
+    group_by_transaction,
     build_summary,
     build_wallets,
     format_amount,
@@ -33,6 +37,7 @@ log = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.globals["static_url"] = static_url
 
 PAGE_SIZE = 50
 
@@ -197,9 +202,20 @@ def _counts(ctx, filters: Filters, scope_ids) -> dict:
     )
     everything = ctx.db.count_activities(**common)
     if filters.show_dust:
-        return {"total": everything, "dust_hidden": 0}
-    shown = ctx.db.count_activities(**common, dust_thresholds=_dust_thresholds(ctx))
-    return {"total": shown, "dust_hidden": everything - shown}
+        return {"total": everything, "dust_hidden": 0, "unverified_hidden": 0}
+
+    unrecognised = _unrecognised_asset_ids(ctx)
+    shown = ctx.db.count_activities(
+        **common, dust_thresholds=_dust_thresholds(ctx), exclude_assets=unrecognised
+    )
+    # Counted apart because they are different accusations. A transfer of 0.87
+    # in ETH is neither: it is small, and perfectly ordinary.
+    without_unverified = ctx.db.count_activities(**common, exclude_assets=unrecognised)
+    return {
+        "total": shown,
+        "dust_hidden": without_unverified - shown,
+        "unverified_hidden": everything - without_unverified,
+    }
 
 
 def _load_page(ctx, filters: Filters) -> tuple[list, str | None]:
@@ -210,6 +226,7 @@ def _load_page(ctx, filters: Filters) -> tuple[list, str | None]:
         asset_id=filters.asset_id,
         search=filters.search,
         dust_thresholds=None if filters.show_dust else _dust_thresholds(ctx),
+        exclude_assets=None if filters.show_dust else _unrecognised_asset_ids(ctx),
         cursor=filters.cursor,
         limit=PAGE_SIZE,
     )
@@ -217,6 +234,9 @@ def _load_page(ctx, filters: Filters) -> tuple[list, str | None]:
     rows = rows[:PAGE_SIZE]
     prices = ctx.db.prices_by_asset()
     activities = [build_activity(row, ctx.chain, scope, prices) for row in rows]
+    # The cursor comes from the query's order, not the display order: grouping
+    # moves rows within a transaction, and paging from a moved row would skip
+    # or repeat whatever sat between.
     next_cursor = None
     if has_more and activities:
         timestamp, activity_id = activities[-1].cursor
@@ -239,18 +259,47 @@ def _wallet_views(ctx, selected_id: int | None = None):
         ctx.chain,
         selected_id=selected_id,
         prices=ctx.db.prices_by_asset(),
+        relevance=_relevance(ctx),
+        max_share=ctx.settings.value_max_share,
     )
 
 
 def _relevance(ctx) -> Relevance:
     """Assembled per request: it depends on prices, on config and on what the
     wallets have actually done."""
+    trusted = frozenset(address for _, address in ctx.config.trusted_assets)
     return Relevance(
         known=frozenset(KNOWN_TOKENS),
-        trusted=frozenset(address for _, address in ctx.config.trusted_assets),
+        trusted=trusted,
         sent_asset_ids=frozenset(ctx.db.sent_asset_ids()),
+        impostor_asset_ids=frozenset(
+            row["id"]
+            for row in ctx.db.all_assets()
+            if row["contract_address"] not in trusted
+            and looks_forged(row["symbol"], row["contract_address"])
+        ),
         dust_below=ctx.settings.dust_below_usd,
     )
+
+
+def _unrecognised_asset_ids(ctx) -> set[int]:
+    """Assets with no market price and nothing vouching for them.
+
+    A transfer of one of these is what the noise on a live address is made of:
+    an airdrop of something with no price, no listing and no history with you.
+    Deliberately not counting "you sent it" — that signal is forgeable, and the
+    tokens it would rescue are exactly the ones forging it.
+    """
+    rules = _relevance(ctx)
+    priced = set(ctx.db.prices_by_asset())
+    return {
+        row["id"]
+        for row in ctx.db.all_assets()
+        if row["contract_address"] != NATIVE
+        and row["id"] not in priced
+        and row["contract_address"] not in rules.known
+        and row["contract_address"] not in rules.trusted
+    } | set(rules.impostor_asset_ids)
 
 
 def _feed_assets(ctx) -> tuple[list, list]:
@@ -308,16 +357,20 @@ def index(
             **_sidebar_context(ctx, wallet, scope),
             "summary": _summary(ctx),
             "scope_label": _scope_label(ctx, filters),
+            "scope_is_panel": filters.account_id is not None,
             "portfolio": _portfolio(
                 ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
             ),
             "prices_on": ctx.price_source is not None,
             "assets": _feed_assets(ctx),
             "activities": activities,
+            "groups": group_by_transaction(activities),
             "next_cursor": next_cursor,
             "previous_day": None,
             "filters": filters,
             "status": _status_view(ctx),
+            "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
+            "older_days": ctx.settings.backfill_days,
             **_counts(ctx, filters, _scope_ids(ctx, filters)),
         },
     )
@@ -351,18 +404,22 @@ def lab(
             **_sidebar_context(ctx, wallet, scope),
             "summary": _summary(ctx),
             "scope_label": _scope_label(ctx, filters),
+            "scope_is_panel": filters.account_id is not None,
             "portfolio": _portfolio(
                 ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
             ),
             "prices_on": ctx.price_source is not None,
             "assets": _feed_assets(ctx),
             "activities": activities,
+            "groups": group_by_transaction(activities),
             "next_cursor": next_cursor,
             "previous_day": None,
             "filters": filters,
             "status": _status_view(ctx),
+            "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
+            "older_days": ctx.settings.backfill_days,
             **_counts(ctx, filters, scope_ids),
-            "stylesheet": "/static/lab.css",
+            "stylesheet": "lab.css",
         },
     )
 
@@ -400,12 +457,15 @@ def activity_fragment(
         "_rows.html",
         {
             "activities": activities,
+            "groups": group_by_transaction(activities),
             "next_cursor": next_cursor,
             # The day heading must not repeat when a page continues the day the
             # previous page ended on, so the sentinel passes that day back.
             "previous_day": (after_day or "")[:10] or None,
             "filters": filters,
             "is_page": filters.cursor is not None,
+            "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
+            "older_days": ctx.settings.backfill_days,
         },
     )
 
@@ -428,21 +488,132 @@ def _sidebar_context(ctx, wallet: str | None, scope: str | None, **extra) -> dic
     }
 
 
-@router.get("/activity/{activity_id}", response_class=HTMLResponse)
-def activity_detail(request: Request, activity_id: int):
-    """Everything about one movement.
+async def _transaction_cost(ctx, tx_hash: str):
+    """The fee, if the provider will say. A failure here is not an error page.
 
-    On a narrow screen the feed drops the transaction hash and block to stay
-    readable; this is where they go, rather than being lost.
+    This is the one call in the app made because a person asked for it rather
+    than on a timer, and it is decoration on a panel that is already useful —
+    so a provider that is down, rate-limited or simply does not keep receipts
+    costs the reader a line, not the transaction they came to look at.
+    """
+    getter = getattr(ctx.provider, "get_transaction_cost", None)
+    if getter is None:
+        return None
+    try:
+        return await getter(tx_hash)
+    except Exception as exc:
+        log.info("transaction cost unavailable for %s: %s", tx_hash, exc)
+        return None
+
+
+def _native_price(ctx, prices) -> Decimal | None:
+    """What the chain's own currency is worth, for pricing a fee."""
+    asset_id = ctx.db.native_asset_id(ctx.chain.chain_id)
+    quote = prices.get(asset_id) if asset_id is not None else None
+    return None if quote is None else Decimal(quote["price"])
+
+
+@router.get("/tx/{activity_id}", response_class=HTMLResponse)
+async def transaction_inspector(request: Request, activity_id: int):
+    """The whole transaction behind one row of the feed.
+
+    Clicking a row used to leave for Etherscan, which is a strange thing for a
+    monitor to do with its own index. What the feed cannot show without turning
+    into a tree — the other transfers this one transaction caused — is here.
     """
     ctx = request.app.state.ctx
     row = ctx.db.get_activity(activity_id)
     if row is None:
         return HTMLResponse("<p class='sheet__error'>That activity is gone.</p>", status_code=404)
+
+    rows = ctx.db.transfers_in_tx(row["chain_id"], row["tx_hash"])
+    status = ctx.db.get_sync_status(ctx.chain.chain_id)
+    prices = ctx.db.prices_by_asset()
     return templates.TemplateResponse(
         request,
-        "_activity_detail.html",
-        {"activity": build_activity(row, ctx.chain, None, ctx.db.prices_by_asset())},
+        "_inspector.html",
+        {
+            "tx": build_transaction(
+                rows or [row],
+                ctx.chain,
+                selected_id=activity_id,
+                prices=prices,
+                head_block=status.head_block,
+                cost=await _transaction_cost(ctx, row["tx_hash"]),
+                native_price=_native_price(ctx, prices),
+            )
+        },
+    )
+
+
+@router.post("/history/older", response_class=HTMLResponse)
+async def load_older_history(
+    request: Request,
+    wallet: str | None = Form(None),
+    direction: str | None = Form(None),
+    asset: str | None = Form(None),
+    q: str | None = Form(None),
+    scope: str | None = Form(None),
+    dust: str | None = Form(None),
+    before: str | None = Form(None),
+    after_day: str | None = Form(None),
+):
+    """Reach further back on demand, then hand over the page it uncovered.
+
+    The feed ending is not the same as the history ending — it ends where the
+    backfill window was set. This moves that window and fetches, so the button
+    behaves like "load more" and simply takes longer the first time.
+    """
+    ctx = request.app.state.ctx
+    if not _same_origin(request):
+        return HTMLResponse("", status_code=403)
+
+    floor = ctx.db.history_floor(ctx.chain.chain_id)
+    status = ctx.db.get_sync_status(ctx.chain.chain_id)
+    reference = min(x for x in (floor, status.requested_from_block) if x is not None) if (
+        floor is not None or status.requested_from_block is not None
+    ) else (status.head_block or 0)
+    target = max(0, reference - ctx.settings.backfill_blocks)
+    ctx.db.request_history_from(ctx.chain.chain_id, target)
+    log.info("history extended to block %s on request", target)
+
+    await ctx.indexer.run_once()
+
+    filters = _parse_filters(wallet, direction, asset, q, before, scope, dust)
+    activities, next_cursor = _load_page(ctx, filters)
+    return templates.TemplateResponse(
+        request,
+        "_rows.html",
+        {
+            "activities": activities,
+            "groups": group_by_transaction(activities),
+            "next_cursor": next_cursor,
+            "previous_day": (after_day or "")[:10] or None,
+            "filters": filters,
+            "is_page": True,
+            "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
+            "older_days": ctx.settings.backfill_days,
+        },
+    )
+
+
+@router.get("/dust-note", response_class=HTMLResponse)
+def dust_note(
+    request: Request,
+    wallet: str | None = Query(None),
+    direction: str | None = Query(None),
+    asset: str | None = Query(None),
+    q: str | None = Query(None),
+    scope: str | None = Query(None),
+    dust: str | None = Query(None),
+):
+    """The line above the feed saying what it is not showing."""
+    ctx = request.app.state.ctx
+    filters = _parse_filters(wallet, direction, asset, q, None, scope, dust)
+    return templates.TemplateResponse(
+        request,
+        "_dust_note.html",
+        {"filters": filters, **_counts(ctx, filters, _scope_ids(ctx, filters))},
     )
 
 
@@ -629,20 +800,54 @@ def summary_fragment(
                 ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
             ),
             "scope_label": _scope_label(ctx, filters),
+            "scope_is_panel": filters.account_id is not None,
             "prices_on": ctx.price_source is not None,
         },
     )
 
 
-@router.get("/status", response_class=HTMLResponse)
-def status_fragment(request: Request):
-    """The whole right-hand side of the top bar: the account summary and the
-    sync indicator. They poll together because they sit together."""
+@router.get("/holdings", response_class=HTMLResponse)
+def holdings_sheet(
+    request: Request,
+    wallet: str | None = None,
+    scope: str | None = None,
+):
+    """Everything the scope holds, for a screen too narrow to list it in place.
+
+    The panel above shows a fixed three so that its height does not depend on
+    how many tokens a wallet has been sent; this is where the rest live.
+    """
     ctx = request.app.state.ctx
+    filters = _parse_filters(wallet, None, None, None, None, scope)
+    return templates.TemplateResponse(
+        request,
+        "_holdings.html",
+        {
+            "portfolio": _portfolio(
+                ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
+            )
+        },
+    )
+
+
+@router.get("/status", response_class=HTMLResponse)
+def status_fragment(
+    request: Request,
+    wallet: str | None = None,
+    scope: str | None = None,
+):
+    """The whole top bar beside the brand: the scope, the account summary and
+    the sync indicator. They poll together because they sit together."""
+    ctx = request.app.state.ctx
+    filters = _parse_filters(wallet, None, None, None, None, scope)
     return templates.TemplateResponse(
         request,
         "_status.html",
-        {"status": _status_view(ctx), "summary": _summary(ctx)},
+        {
+            "status": _status_view(ctx),
+            "summary": _summary(ctx),
+            "scope_label": _scope_label(ctx, filters),
+        },
     )
 
 

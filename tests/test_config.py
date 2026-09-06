@@ -208,7 +208,7 @@ def test_an_existing_database_upgrades_without_being_recreated(tmp_path: Path):
     database = Database(database_path)
     applied = database.migrate()
 
-    assert applied == [2, 3, 4, 5], "only the pending migrations run"
+    assert applied == [2, 3, 4, 5, 6], "only the pending migrations run"
     assert [a.name for a in database.list_accounts()] == ["Main"], "existing rows survive"
     assert database.prices_by_asset() == {}
 

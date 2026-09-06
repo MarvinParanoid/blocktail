@@ -433,3 +433,9 @@ validation. It needs no API key and makes no network calls.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) covers the provider choice and its
 limitations, the schema, and how events are normalized and deduplicated.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

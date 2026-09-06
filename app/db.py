@@ -460,10 +460,21 @@ class Database:
         asset_id: int | None,
         search: str,
         dust_thresholds: dict[int, float] | None = None,
+        exclude_assets: set[int] | None = None,
     ) -> tuple[list[str], dict[str, object]]:
         """WHERE clauses shared by the feed page and its count."""
         where: list[str] = []
         params: dict[str, object] = {}
+
+        if exclude_assets:
+            # Not `asset_id` as the loop variable: that is the asset *filter*
+            # parameter, and shadowing it silently narrowed the whole feed to
+            # whichever asset happened to be excluded last.
+            names = []
+            for index, skipped in enumerate(sorted(exclude_assets)):
+                params[f"skip{index}"] = skipped
+                names.append(f":skip{index}")
+            where.append(f"a.asset_id NOT IN ({', '.join(names)})")
 
         # Dust is excluded here rather than after the fact: filtering a page in
         # Python would leave short pages and a cursor that skips rows.
@@ -523,6 +534,7 @@ class Database:
         asset_id: int | None = None,
         search: str = "",
         dust_thresholds: dict[int, float] | None = None,
+        exclude_assets: set[int] | None = None,
         cursor: tuple[int, int] | None = None,
         limit: int = 50,
     ) -> list[sqlite3.Row]:
@@ -530,7 +542,7 @@ class Database:
         for every monitored account."""
         where, params = self._activity_filters(
             account_ids=account_ids, direction=direction, asset_id=asset_id, search=search,
-            dust_thresholds=dust_thresholds,
+            dust_thresholds=dust_thresholds, exclude_assets=exclude_assets,
         )
         params["limit"] = limit + 1
 
@@ -553,11 +565,12 @@ class Database:
         asset_id: int | None = None,
         search: str = "",
         dust_thresholds: dict[int, float] | None = None,
+        exclude_assets: set[int] | None = None,
     ) -> int:
         """How many activities the current filters match, for "N transactions"."""
         where, params = self._activity_filters(
             account_ids=account_ids, direction=direction, asset_id=asset_id, search=search,
-            dust_thresholds=dust_thresholds,
+            dust_thresholds=dust_thresholds, exclude_assets=exclude_assets,
         )
         sql = (
             "SELECT COUNT(*) FROM activities a"
@@ -569,6 +582,13 @@ class Database:
             + (" WHERE " + " AND ".join(where) if where else "")
         )
         return self.connect().execute(sql, params).fetchone()[0]
+
+    def all_assets(self) -> list[sqlite3.Row]:
+        return list(
+            self.connect().execute(
+                "SELECT id, chain_id, contract_address, symbol, decimals FROM assets"
+            )
+        )
 
     def sent_asset_ids(self) -> set[int]:
         """Assets a monitored account has itself sent.
@@ -589,6 +609,23 @@ class Database:
             self._ACTIVITY_SELECT + " WHERE a.id = :id", {"id": activity_id}
         ).fetchall()
         return rows[0] if rows else None
+
+    def transfers_in_tx(self, chain_id: str, tx_hash: str) -> list[sqlite3.Row]:
+        """Every movement one transaction produced, in on-chain order.
+
+        A swap is one transaction and four transfers, and reading them as four
+        unrelated rows minutes apart in the feed is how the feed lies. They are
+        kept as separate rows — the amounts are not ours to add up — but they
+        are shown together.
+        """
+        return list(
+            self.connect().execute(
+                self._ACTIVITY_SELECT
+                + " WHERE a.chain_id = :chain AND a.tx_hash = :tx"
+                + " ORDER BY a.id",
+                {"chain": chain_id, "tx": tx_hash.lower()},
+            )
+        )
 
     # ------------------------------------------------------------- balances
 
@@ -672,6 +709,13 @@ class Database:
             )
         }
 
+    def native_asset_id(self, chain_id: str) -> int | None:
+        row = self.connect().execute(
+            "SELECT id FROM assets WHERE chain_id = ? AND contract_address = ''",
+            (chain_id,),
+        ).fetchone()
+        return None if row is None else row["id"]
+
     def held_assets(self) -> list[sqlite3.Row]:
         """Assets any monitored account currently holds — the set worth pricing."""
         return list(
@@ -700,8 +744,29 @@ class Database:
             last_attempt_at=row["last_attempt_at"],
             last_error=row["last_error"],
             backfill_done=bool(row["backfill_done"]),
+            requested_from_block=row["requested_from_block"],
             activity_count=self.activity_count(),
         )
+
+    def request_history_from(self, chain_id: str, block: int) -> None:
+        """Ask the indexer to reach back to ``block``. Only ever deeper."""
+        conn = self.connect()
+        with self._write_lock:
+            conn.execute(
+                "INSERT INTO sync_state (chain_id, requested_from_block) VALUES (?, ?)"
+                " ON CONFLICT (chain_id) DO UPDATE SET requested_from_block ="
+                "   MIN(COALESCE(requested_from_block, ?), ?)",
+                (chain_id, block, block, block),
+            )
+
+    def history_floor(self, chain_id: str) -> int | None:
+        """The earliest block any active account has been read from."""
+        row = self.connect().execute(
+            "SELECT MIN(indexed_from_block) FROM accounts"
+            " WHERE active = 1 AND chain_id = ? AND indexed_from_block IS NOT NULL",
+            (chain_id,),
+        ).fetchone()
+        return row[0] if row else None
 
     def record_attempt(self, chain_id: str) -> None:
         self._upsert_sync(chain_id, {"last_attempt_at": int(time.time())})

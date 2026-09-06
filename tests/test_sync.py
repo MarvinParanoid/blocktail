@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from app.main import build_context
@@ -530,3 +532,50 @@ def test_narrowing_the_window_does_not_forget_what_was_read(settings, provider, 
     starts = {from_block for _, address, _, from_block, _ in provider.calls if address == MAIN}
     assert min(starts) > deep, "and it goes back to incremental, not to the shallower floor"
     ctx.db.close()
+
+
+def test_only_the_wallets_that_moved_are_re_read(app_ctx, provider, sample_transfers):
+    """A balance cannot change without a transfer, and we have just read every
+    transfer. Asking the provider about the wallets that did not move is a
+    rate limit spent on an answer we already know."""
+    app_ctx.indexer.settings = replace(app_ctx.indexer.settings, balance_refresh=3600)
+    provider.transfers = sample_transfers
+    run(app_ctx.indexer.run_once())
+
+    provider.balance_calls.clear()
+    provider.transfers = []
+    run(app_ctx.indexer.run_once())
+
+    assert provider.balance_calls == [], "a quiet cycle should ask the provider nothing"
+
+
+def test_a_wallet_that_moved_is_re_read_at_once(app_ctx, provider, sample_transfers):
+    app_ctx.indexer.settings = replace(app_ctx.indexer.settings, balance_refresh=3600)
+    run(app_ctx.indexer.run_once())
+
+    provider.balance_calls.clear()
+    provider.head_block += 1
+    provider.transfers = [
+        transfer("late", sender=STRANGER, recipient=MAIN, amount=10**18,
+                 block=provider.head_block),
+    ]
+    run(app_ctx.indexer.run_once())
+
+    assert MAIN in provider.balance_calls
+    assert COLD not in provider.balance_calls, "the wallet that stayed still is not re-read"
+
+
+def test_the_sweep_still_catches_what_no_transfer_explains(app_ctx, provider, sample_transfers):
+    """The argument above is sound but not airtight, so a slow full sweep
+    remains the safety net."""
+    app_ctx.indexer.settings = replace(app_ctx.indexer.settings, balance_refresh=0)
+    provider.transfers = sample_transfers
+    run(app_ctx.indexer.run_once())
+
+    provider.native_balances[MAIN] = 7 * 10**18
+    provider.transfers = []
+    run(app_ctx.indexer.run_once())
+
+    accounts = {a.name: a.id for a in app_ctx.db.list_accounts()}
+    refreshed = app_ctx.db.balances_by_account()[accounts["Main"]]
+    assert refreshed[0]["amount_raw"] == str(7 * 10**18)
