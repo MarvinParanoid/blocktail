@@ -101,8 +101,12 @@
         <ul class="holdings">
           {% set ranks = namespace(shown=0) %}
           {% for asset in portfolio.assets %}
-            {% if not asset.is_native and not asset.hidden %}{% set ranks.shown = ranks.shown + 1 %}{% endif %}
-            <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--excluded' if asset.excluded }}{{ ' holding--hidden' if asset.hidden }}{{ ' holding--compact' if ranks.shown <= 2 and not asset.is_native and not asset.hidden }}">
+            {# An excluded asset is excluded because its quote is not credible.
+               Letting it lead the two-line phone list hands the top of the
+               screen to the one number the app has just refused to believe. #}
+            {% set countable = not asset.is_native and not asset.hidden and not asset.excluded %}
+            {% if countable %}{% set ranks.shown = ranks.shown + 1 %}{% endif %}
+            <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--excluded' if asset.excluded }}{{ ' holding--hidden' if asset.hidden }}{{ ' holding--compact' if countable and ranks.shown <= 2 }}">
               <a class="holding__hit" href="?asset={{ asset.asset_id }}"
                  hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
                  hx-include="#wallet-value, #scope-value" hx-on:click="filterByAsset('{{ asset.asset_id }}')"

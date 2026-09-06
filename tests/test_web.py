@@ -1254,97 +1254,6 @@ def test_the_narrow_layout_keeps_the_full_width(client):
     assert ".app" not in narrow, "the container is left alone below the breakpoint"
 
 
-# ------------------------------------------------------------ the experiment
-
-
-def test_the_experimental_layout_is_a_second_composition_not_a_replacement(client):
-    """Both layouts are served so they can be compared side by side; the current
-    one must keep its own template and stylesheet untouched."""
-    current = client.get("/").text
-    lab = client.get("/lab").text
-
-    assert '/static/app.css' in current and "lab.css" not in current
-    assert "/static/lab.css" in lab
-    assert client.get("/static/lab.css").status_code == 200
-
-
-def test_the_experimental_layout_drops_the_standing_sidebar(client):
-    """The L-shaped composition is what the experiment is testing: without a
-    column down the left the activity area is a rectangle."""
-    lab = client.get("/lab").text
-
-    assert 'class="tabs"' in lab, "scope moves into a row of tabs"
-    assert 'class="pane"' in lab, "and the table becomes a bounded object"
-    assert "Activity</h2>" in lab
-    assert 'class="tabs__manage"' in lab, "wallet management still reachable"
-    # The list itself still exists — as a sheet, so renaming and removing survive.
-    assert 'id="wallets"' in lab
-
-
-def test_the_experimental_layout_counts_what_it_shows(client):
-    """The count is of the filtered feed, not of everything indexed."""
-    everything = client.get("/lab").text
-    assert f"{client.ctx.db.activity_count():,} transactions" in everything
-
-    usdc = next(row["id"] for row in client.ctx.db.feed_assets() if row["symbol"] == "USDC")
-    filtered = client.get("/lab", params={"asset": usdc}).text
-    assert "1 transaction<" in filtered.replace("\n", "").replace("  ", "")
-
-
-def test_both_layouts_share_one_behaviour_script(client):
-    """The composition differs; the behaviour must not fork, or one of them
-    quietly stops closing dialogs or highlighting new rows."""
-    behaviour = pathlib.Path("app/web/templates/_behaviour.html").read_text()
-    assert "function selectScope" in behaviour and "row--new" in behaviour
-
-    for path in ("/", "/lab"):
-        body = client.get(path).text
-        assert "function selectScope" in body
-        assert "isAutoRefresh" in body
-
-
-def test_the_experiment_makes_activity_one_surface(client):
-    """Controls sitting outside the table's border read as three stacked bands.
-    Inside it they read as one component — which is most of why Etherscan looks
-    collected despite carrying more."""
-    lab = client.get("/lab").text
-    pane = lab[lab.index('<div class="pane">'):lab.index("</table>")]
-
-    assert 'class="activity__head"' in pane
-    assert 'id="scope-tabs"' in pane
-    assert 'id="filters"' in pane
-    assert 'class="feed"' in pane
-
-
-def test_the_experiment_names_the_direction_column(client):
-    """Coloured IN/OUT values under a blank heading is a column with no name."""
-    header = re.search(r"<thead>.*?</thead>", client.get("/lab").text, re.S).group(0)
-    assert ">Dir</th>" in header
-
-
-def test_the_experiment_holds_the_summary_to_a_column(client):
-    """An overview should not imitate the 1500px table underneath it."""
-    css = pathlib.Path("app/web/static/lab.css").read_text()
-    assert re.search(r"\.lab \.summary__body \{[^}]*max-width: 880px", css)
-    assert re.search(r"\.lab \.holdings-row \{[^}]*max-width: 880px", css)
-
-
-def test_the_experiment_reads_a_step_larger(client):
-    """20 legible rows beat 30 microscopic ones."""
-    css = pathlib.Path("app/web/static/lab.css").read_text()
-    base = pathlib.Path("app/web/static/app.css").read_text()
-
-    lab_amount = int(re.search(r"\.lab \.amount \{ font-size: (\d+)px", css).group(1))
-    base_amount = float(
-        re.search(r"^\.amount \{[^}]*font-size: ([\d.]+)px", base, re.M).group(1)
-    )
-    assert lab_amount > base_amount
-
-    lab_row = int(re.search(r"\.lab \.feed td \{ padding: (\d+)px", css).group(1))
-    base_row = int(re.search(r"\.feed td \{\n  padding: (\d+)px", base).group(1))
-    assert lab_row > base_row
-
-
 def test_one_absurd_asset_cannot_swallow_the_total(settings, provider, prices, sample_transfers):
     """Live data found this: a scam token with a nominal DEX quote and 10^17
     units made the portfolio read $4.9 quadrillion. An asset that would be
@@ -2227,3 +2136,29 @@ def test_the_hidden_count_is_not_explained_twice_on_a_phone(client):
     # ...and is still there on the screen that has room for it.
     body = client.get("/dust-note", params={"dust": ""}).text
     assert "dust-note__why" in body or "is-empty" in body
+
+
+def test_a_disbelieved_asset_never_leads_the_compact_list(client, settings, provider, prices,
+                                                          sample_transfers):
+    """The phone shows two holdings. An asset excluded from the total is
+    excluded because its quote is not credible — letting it take one of those
+    two hands the top of the screen to the number just refused."""
+    from decimal import Decimal
+
+    from app.main import create_app
+    from app.models import AssetRef, Balance
+
+    scam = AssetRef("ethereum", "0x" + "5" * 40, "SCAM", 18)
+    provider.transfers = sample_transfers
+    provider.token_balances[MAIN] = [Balance(scam, 10**17 * 10**18)]
+    prices.quotes[("ethereum", scam.contract_address)] = Decimal("0.049")
+
+    app = create_app(settings=settings, config=make_config(), provider=provider,
+                     price_source=prices, run_indexer=False)
+    with TestClient(app) as scam_client:
+        run(app.state.ctx.indexer.run_once())
+        body = scam_client.get("/summary").text
+
+    excluded = re.findall(r'class="holding[^"]*holding--excluded[^"]*"', body)
+    assert excluded, "the fixture produces an excluded asset"
+    assert all("holding--compact" not in c for c in excluded)

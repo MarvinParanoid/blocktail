@@ -376,66 +376,6 @@ def index(
     )
 
 
-@router.get("/lab", response_class=HTMLResponse)
-def lab(
-    request: Request,
-    wallet: str | None = Query(None),
-    direction: str | None = Query(None),
-    asset: str | None = Query(None),
-    q: str | None = Query(None),
-    scope: str | None = Query(None),
-):
-    """An alternative composition, kept alongside the current one to compare.
-
-    No standing sidebar, so the activity area is a rectangle rather than an L;
-    scope as a row of tabs; an unlabelled toolbar; the table inside a bounded
-    pane; and a larger type scale with more separation between the three levels
-    of information in a row.
-    """
-    ctx = request.app.state.ctx
-    filters = _parse_filters(wallet, direction, asset, q, None, scope)
-    activities, next_cursor = _load_page(ctx, filters)
-    scope_ids = _scope_ids(ctx, filters)
-
-    return templates.TemplateResponse(
-        request,
-        "index_lab.html",
-        {
-            **_sidebar_context(ctx, wallet, scope),
-            "summary": _summary(ctx),
-            "scope_label": _scope_label(ctx, filters),
-            "scope_is_panel": filters.account_id is not None,
-            "portfolio": _portfolio(
-                ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
-            ),
-            "prices_on": ctx.price_source is not None,
-            "assets": _feed_assets(ctx),
-            "activities": activities,
-            "groups": group_by_transaction(activities),
-            "next_cursor": next_cursor,
-            "previous_day": None,
-            "filters": filters,
-            "status": _status_view(ctx),
-            "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
-            "older_days": ctx.settings.backfill_days,
-            **_counts(ctx, filters, scope_ids),
-            "stylesheet": "lab.css",
-        },
-    )
-
-
-@router.get("/lab/tabs", response_class=HTMLResponse)
-def lab_tabs(
-    request: Request,
-    wallet: str | None = Query(None),
-    scope: str | None = Query(None),
-):
-    ctx = request.app.state.ctx
-    return templates.TemplateResponse(
-        request, "_scope_tabs.html", _sidebar_context(ctx, wallet, scope)
-    )
-
-
 @router.get("/activity", response_class=HTMLResponse)
 def activity_fragment(
     request: Request,

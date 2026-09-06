@@ -6,51 +6,26 @@ A small, self-hosted, **read-only** activity monitor for a fixed set of Ethereum
 addresses. One page: the wallets you watch with their balances, and a single
 chronological feed of everything that touched them.
 
-![blocktail watching two public Ethereum addresses](docs/blocktail.png)
+![blocktail watching Vitalik's and the Ethereum Foundation's addresses](docs/blocktail.png)
 
 *Live mainnet data. The struck-through NMT figure is a scam token whose nominal
-quote would otherwise have made the total read $4.9 quadrillion — see
-[Valuation](ARCHITECTURE.md#valuation).*
+quote would otherwise have made the total read $4.98 quadrillion — see
+[Valuation](ARCHITECTURE.md#valuation). The 572 hidden transfers are dust and
+tokens nothing vouches for; they are indexed and one click away.*
 
-The top of the page answers *how much do I have*:
+Clicking a row opens the transaction behind it. A feed is a list of transfers,
+which is the right unit for scanning — but a swap is one thing that happened
+and four rows in the index, so the transaction they share is a place you can
+go rather than something the feed has to fold itself into a tree to show. Fee
+and gas are read from the chain when you open it, not indexed:
 
-```
-blocktail_                          3 accounts · ● Ethereum · #25,895,730 · 8s ago
-──────────────────────────────────────────────────────────────────────────────────
-▾ ALL WALLETS  3 accounts
-  TOTAL VALUE      NATIVE            TOKENS
-  $161,028         36.423 ETH        $47,368
-                   $113,660          4 tokens
-  ETH 36.423 $113,660  USDT 25,000 $24,995  USDC 14,155 $14,155       prices · 39s
-──────────────────────────────────────────────────────────────────────────────────
-All wallets        DIRECTION      ASSET          SEARCH
-                   [ALL IN OUT]   [All assets]   [address, tx hash or label]
-Main
-0x5aAe…eAed        ── TODAY ──────────────────────────────────────────────────────
-$35,713            11:39  Main             IN     11 ETH      Binance    0xb84bd3…
-4.821 ETH          10:24  Main → Payments          8 ETH                 0x4a5e0e…
-  12,450.72 USDC   04:25  Payments         OUT  29.68 WETH    0xD34b…    0x8fc169…
-  2.35 WETH        03:33  Main             IN   0.98 ETH int  0xff52…    0x1a91de…
-  890.12 DAI
-                   ── YESTERDAY ──────────────────────────────────────────────────
-Cold               20:54  Cold             IN   93.1 USDT     0x71E7…    0x5beeab…
-0xfB69…d359        09:01  Main             OUT  99.41 WETH    My Ledger  0x33a300…
-$123,543           04:43  Main → Cold              2 ETH                 0xdad2eb…
-31.42 ETH
-```
+![The transaction inspector, docked beside the feed](docs/inspector.png)
 
-Collapsed, it gets out of the way and gives the screen back to the log:
+On a phone it is not a folded table. The portfolio is one figure and a line
+about it, the holdings are two rows and a sheet, and an event is two lines that
+use the whole width — a compact log rather than a desktop in one column:
 
-```
-▸ ALL WALLETS  3 accounts  $161,028  36.423 ETH · 4 tokens
-```
-
-Selecting a wallet in the sidebar rescopes the whole page — summary, feed and
-all — so there is no separate dashboard to switch to:
-
-```
-▸ COLD  $123,543  31.42 ETH · 2 tokens
-```
+<img src="docs/mobile.png" alt="blocktail on a phone" width="380">
 
 It never asks for a private key, a seed phrase, a wallet connection or a
 signature, and it has no code path that could send a transaction.
@@ -65,8 +40,15 @@ signature, and it has no code path that could send a transaction.
   into local SQLite. It does not re-fetch history on every page load.
 - Collapses a transfer between two of your own wallets into one `Main → Cold`
   row rather than showing it twice.
-- Names external addresses you have labelled; truncates the rest to
-  `0x1234…abcd`, always linking through to Etherscan.
+- Names external addresses you have labelled, and falls back to a built-in
+  list of about fifty well-known ones — routers, bridges, lending pools,
+  exchange wallets. Everything else is truncated to `0x1234…abcd`, always
+  linking through to Etherscan. Your labels always win.
+- Folds a transaction's transfers into one entry led by the one carrying the
+  value, and opens the whole transaction — every transfer, the fee, the gas —
+  in an inspector docked beside the feed, or as a sheet on a phone.
+- Hides dust and tokens nothing vouches for, counts the two apart, and says how
+  many of each. Nothing is deleted: one click brings them back.
 - Groups the feed by day — Today, Yesterday, then dates — and gives rows that
   arrive on an automatic refresh a brief highlight before they settle.
 - Totals what you hold, across every wallet or one of them, in a collapsible
@@ -76,9 +58,10 @@ signature, and it has no code path that could send a transaction.
   transaction hashes and labels — no page reload.
 - On a wide screen the content is capped at 1440px and centred, with the top bar,
   filters and table head sticky as the page scrolls.
-- On a phone it is not a squeezed desktop: the sidebar becomes a bottom sheet
-  behind a scope selector, the summary starts collapsed, and the feed becomes a
-  log, so activity is on screen immediately rather than below navigation.
+- On a phone it is not a squeezed desktop. The scope lives in the top bar, the
+  portfolio is one figure and a line about it, holdings are capped at two with
+  the rest a tap away, and an event is two lines using the whole width — so the
+  screen is spent on activity rather than on navigation and repetition.
 - Refreshes itself, and says so loudly when synchronization has stopped or the
   upstream provider is unavailable. It never presents stale data as current.
 
@@ -349,13 +332,6 @@ watch.example.com {
 ```
 
 Over Tailscale, skip the proxy and reach the VPS's tailnet address directly.
-
-### Two layouts
-
-`/` is the current layout; `/lab` is an alternative composition kept alongside it
-for comparison. Both are served. Pick one and, when you have, the other can be
-deleted — they share their fragments and behaviour, so removing either is a
-deletion rather than a rewrite.
 
 ### One worker
 

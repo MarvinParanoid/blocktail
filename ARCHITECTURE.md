@@ -41,13 +41,57 @@ Above 860px the content sits in a centred container capped at 1440px. The limit
 is not about taste in whitespace: past that width the parts of one row — wallet,
 amount, counterparty, hash — drift far enough apart that scanning a log becomes
 head-turning. The viewport keeps its own background, so this is a width bound
-rather than a card.
+rather than a card. Navigator, feed and inspector share one outline, because a
+sidebar on the left with unbounded text to the right reads as unfinished.
 
-Below 860px the layout is not the same one compressed: the sidebar becomes a
-docked sheet reached through a scope selector, the summary panel defaults to
-collapsed, and feed rows are laid out as a log with the hash and block moved
-into a per-row detail sheet (`GET /activity/{id}`). The goal is that the first
-screen on a phone is activity, not navigation.
+Which columns a row needs depends on the scope. With one wallet selected the
+wallet column is its name repeated on every line, so it goes; with several it
+is the only thing distinguishing them, so it stays. That class is applied by
+the server *and* re-applied by the client, because htmx swaps the feed without
+re-rendering its container — a stale `one-wallet` hides a cell that spans two
+columns on transfers between your own wallets, and takes the row with it.
+
+Below 860px the layout is not the same one compressed — it is a different
+information architecture. Desktop is a table; the phone is an event log. The
+scope moves into the top bar, which is the only thing that never scrolls away
+(a sticky child stops sticking the moment its parent scrolls past, so the
+summary panel cannot hold it). The portfolio becomes one figure and a line
+about it. Holdings are capped at two and never include the native balance,
+which the line above already states, so the header's height stops depending on
+how many tokens have been sent to the address — not something the owner
+controls. A row is two lines using the full width rather than desktop columns
+folded: who, then what moved. Everything an event says starts on one vertical.
+
+## The transaction inspector
+
+A feed is a list of transfers, which is the right unit for scanning: a swap
+really did move four different things. But those four share one cause, and
+showing them as unrelated rows is how a feed misleads.
+
+So a transaction is one entry, led by the transfer carrying the most value with
+the rest folded behind it — still separate rows, because a token added to an
+unrelated token is not a sum, and neither are two amounts of the same asset
+going to different places. Which transfer leads is decided by value; with
+nothing priced, on-chain order decides, since guessing between two unpriced
+amounts of different assets is worse than not guessing.
+
+The cause itself is a place you can go: `GET /tx/{activity_id}` renders every
+transfer of that transaction, docked beside the feed on a wide screen and to
+the bottom edge on a narrow one — the same component either way, and
+deliberately not a modal, since the point of an inspector is that you can keep
+reading what it inspects.
+
+Fee and gas are read on demand (`eth_getTransactionReceipt` plus
+`eth_getTransactionByHash`), never indexed. It is the one call the app makes
+because a person asked rather than on a timer, and it decorates a panel that is
+already useful without it — so a provider that is down, rate-limited or has
+pruned the receipt costs the reader a line, not the transaction they opened. A
+fee the chain will not state is absent, not zero: a fee rendered as 0 is a claim
+about what something cost, and the wrong one.
+
+Grouping reorders rows within a transaction, so the pagination cursor comes
+from the query's order rather than the display order. Paging from a moved row
+would skip or repeat whatever sat between it and the true end of the page.
 
 ---
 
@@ -240,6 +284,29 @@ Pruning runs **only after a fully successful cycle**. If any wallet's fetch
 fails, the cycle records the error, leaves the watermark where it was, and
 deletes nothing.
 
+### Balances
+
+A balance cannot change without a transfer, and the cycle has just read every
+transfer — so only the wallets that moved are re-read. Asking the provider about
+the other four every thirty seconds bought nothing but rate-limit headroom
+spent, and rate limits are what a free plan actually runs out of. A quiet cycle
+now makes no balance call at all.
+
+The argument is sound but not airtight, so a full sweep every
+`BALANCE_REFRESH_SECONDS` remains the safety net. This is also why the provider
+retries treat HTTP 403 as throttling rather than as a permissions problem: it
+is what Alchemy answers a burst with, and reading it literally sends you looking
+for a key that is fine.
+
+### Reaching further back
+
+The backfill window is a setting, not a fact about the chain, and raising it
+used to do nothing because a watermark only ever moved forward. Accounts now
+carry a floor as well as a ceiling — `indexed_from_block` alongside
+`synced_to_block` — so the feed can be asked to go further back than it has,
+and the end of the feed says where indexing stops rather than stopping without
+explanation.
+
 ---
 
 ## Valuation
@@ -290,6 +357,63 @@ should not guess at.
 
 ---
 
+## What is worth showing
+
+A monitored address receives things nobody asked for. Live mainnet data on two
+ordinary wallets produced 382 tokens and 572 transfers that the owner has no
+relationship with. None of it is deleted — it is indexed and one click away —
+but none of it is shown by default, and the app says how much it is holding
+back and why.
+
+Three different judgements, kept apart because conflating them made the
+interface lie:
+
+* **Dust** is small. A transfer worth less than `DUST_TRANSFER_USD_CENTS` is
+  hidden. Small is not the same as fake: `0.000346 ETH` at 87 cents is an
+  ordinary payment and stays.
+* **Unverified** is unknown. A token that is unpriced, unknown to this chain,
+  never vouched for in the config and never sent by one of your own wallets has
+  nothing behind it but a `Transfer` log anyone can emit.
+* **Impostor** is a name chosen to deceive, and is stronger than either — it
+  overrides "you sent it", because an ERC-20 contract can emit a transfer with
+  any `from` it likes, including yours.
+
+The counts are reported separately (`N dust · M unverified`) because "small"
+and "unknown" are different accusations. The two are combined only in the one
+word the affordance needs — *noisy* — and only on a phone, where the breakdown
+crowds the number it explains.
+
+Detecting an impostor by listing lookalike characters is a race that cannot be
+won: live data turned up Cyrillic, Greek, Armenian, Lisu, Canadian syllabics
+and mathematical symbols, all rendering as plain Latin. So the test is
+inverted. A ticker on this chain is ASCII, short and unspaced. One that is not
+— from a contract nobody knows — is trying to look like something. That catches
+`ꓴꓢꓓ⊤` and `U឵S឵DΤ`, and also `Tether USDT`, which is entirely Latin and still
+an impersonation. `YRISE` and `Duhash.games` are worthless and honest about it;
+they stay unverified rather than being called forgeries.
+
+## Names for well-known addresses
+
+About fifty addresses — routers, bridges, lending pools, exchange wallets —
+have built-in names, because a feed reading `TW1 → 0x4b74…d72A` makes the reader
+do the lookup the app exists to save them.
+
+A wrong name is worse than none: `0x4b74…d72A` is honest about what it does not
+tell you, and a confident label on the wrong address is a claim the reader has
+no way to doubt. Two checks enforce that. Every entry is written in EIP-55 form
+and a test verifies it, so an altered character fails the checksum with
+overwhelming probability. Every entry also declares whether it is a contract or
+an externally owned account, which `tests/test_known_addresses_live.py` checks
+against the chain — a contract must have code, an exchange wallet must not and
+must have sent a great many transactions. That check rejected an entry during
+development; it was removed rather than guessed at again.
+
+These are a fallback. A monitored wallet's name, then a label in `wallets.yml`,
+then this list, then the shortened address — the reader's word about their own
+counterparties beats ours.
+
+---
+
 ## Chain neutrality
 
 Only Ethereum is implemented, and no plugin framework exists. What is deliberate
@@ -304,6 +428,9 @@ is the placement of Ethereum-specific knowledge:
   typo.
 * Persistence, the JSON API and the view models speak `chain`, `account`,
   `asset`, `activity`, `counterparty`.
+* `Chain.known_label()` is part of the protocol, not a lookup the view layer
+  does for itself: an address means nothing without the chain it is on, and the
+  same twenty bytes name something different elsewhere.
 * `wallets.yml` accepts a per-wallet `chain:` key; `ethereum` is the only
   accepted value and the error message lists what is supported.
 
