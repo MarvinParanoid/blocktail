@@ -194,3 +194,83 @@ def test_an_address_nobody_knows_is_still_shortened():
     party = _party(EthereumChain(), "0x" + "9" * 40, None, None)
     assert party.display == party.short
     assert not party.is_labelled
+
+
+# ------------------------------------------------------------- token list
+
+
+def test_the_vendored_list_widens_the_allowlist():
+    """A holding of a real asset must not be called dust because its price
+    lookup failed. Thirty hand-picked tokens was a floor, not a registry."""
+    from app.chains.ethereum.known_assets import CURATED, KNOWN_TOKENS
+
+    assert len(KNOWN_TOKENS) > 10 * len(CURATED) // 2, "the list is actually loaded"
+    assert set(CURATED) <= set(KNOWN_TOKENS)
+
+
+def test_the_curated_floor_survives_the_list():
+    """Upstream lists are not supersets. Uniswap's default carries neither
+    stETH nor wstETH, and losing them would be a regression dressed as an
+    upgrade."""
+    from app.chains.ethereum.known_assets import KNOWN_TOKENS
+
+    by_symbol = {symbol for symbol in KNOWN_TOKENS.values()}
+    for symbol in ("stETH", "wstETH", "rETH", "sDAI", "TUSD"):
+        assert symbol in by_symbol, symbol
+
+
+def test_a_curated_name_wins_over_a_listed_one():
+    from app.chains.ethereum.known_assets import CURATED, KNOWN_TOKENS
+
+    for address, symbol in CURATED.items():
+        assert KNOWN_TOKENS[address] == symbol
+
+
+def test_forgery_targets_are_not_derived_from_the_allowlist():
+    """An impostor is excluded outright — the harshest thing this app does to an
+    asset — and hundreds of real tokens share a ticker with some other real
+    token. Deriving the targets from four hundred listed tokens would brand
+    honest projects as frauds by coincidence."""
+    from app.chains.ethereum.known_assets import KNOWN_TOKENS, _FORGERY_TARGETS
+
+    assert len(_FORGERY_TARGETS) < len(KNOWN_TOKENS) / 10
+    listed = {s.upper() for s in KNOWN_TOKENS.values()}
+    assert not listed <= _FORGERY_TARGETS
+
+
+def test_no_listed_token_is_called_a_forgery():
+    """The list and the filter have to agree, or a real holding disappears."""
+    from app.chains.ethereum.known_assets import KNOWN_TOKENS, looks_forged
+
+    accused = [(a, s) for a, s in KNOWN_TOKENS.items() if looks_forged(s, a)]
+    assert accused == []
+
+
+def test_the_chains_own_currency_cannot_forge_itself():
+    """Adding "ETH" to the forgery targets without this guard classified the
+    native asset as a forgery of itself, and emptied the feed of every ETH
+    transfer. It has no contract; it is the thing being impersonated."""
+    from app.chains.ethereum.known_assets import impersonates_known, looks_forged
+
+    assert not looks_forged("ETH", "")
+    assert not impersonates_known("ETH", "")
+    # ...while a token calling itself ETH from some contract still is one.
+    assert looks_forged("ETH", "0x" + "9" * 40)
+
+
+def test_the_vendored_list_records_where_it_came_from():
+    """A trust input nobody can audit is a trust input nobody should use."""
+    import json
+    import pathlib
+
+    document = json.loads(
+        pathlib.Path("app/chains/ethereum/tokenlist.json").read_text()
+    )
+    assert document["chainId"] == 1
+    assert document["sources"], "which lists, at which version"
+    for source in document["sources"]:
+        assert source["url"].startswith("https://")
+        assert source["version"]
+    for address, entry in document["tokens"].items():
+        assert address == address.lower() and len(address) == 42
+        assert entry["symbol"] and isinstance(entry["decimals"], int)

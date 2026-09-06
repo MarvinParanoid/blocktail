@@ -327,18 +327,32 @@ def test_static_assets_are_served(client):
 
 @pytest.fixture
 def dated_client(settings, watch_config, provider, prices):
-    """Activity spread over today, yesterday and a week ago."""
+    """Activity spread over today, yesterday and a week ago.
+
+    Anchored to the local day boundary rather than to "an hour ago", which is
+    yesterday for the two hours after midnight — a test that fails between 00:00
+    and 02:00 in whatever timezone it happens to run in.
+    """
+    import datetime as dt
+
     now = int(time.time())
     day = 86_400
+    midnight = int(
+        dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    )
+    # Halfway between midnight and now: always today, and always in the past.
+    early_today = midnight + (now - midnight) // 3
+    late_today = midnight + 2 * (now - midnight) // 3
+
     provider.transfers = [
         transfer("today-1", sender=STRANGER, recipient=MAIN, amount=10**18,
-                 block=21_000_090, timestamp=now - 3600),
+                 block=21_000_090, timestamp=late_today),
         transfer("today-2", sender=MAIN, recipient=STRANGER, amount=2 * 10**17,
-                 block=21_000_080, timestamp=now - 7200),
+                 block=21_000_080, timestamp=early_today),
         transfer("yesterday", sender=STRANGER, recipient=COLD, amount=3 * 10**18,
-                 block=21_000_070, timestamp=now - day - 3600),
+                 block=21_000_070, timestamp=midnight - 3600),
         transfer("older", sender=PAYMENTS, recipient=STRANGER, amount=4 * 10**17,
-                 block=21_000_060, timestamp=now - 7 * day),
+                 block=21_000_060, timestamp=midnight - 7 * day),
     ]
     app = create_app(settings=settings, config=watch_config, provider=provider,
                      price_source=prices, run_indexer=False)

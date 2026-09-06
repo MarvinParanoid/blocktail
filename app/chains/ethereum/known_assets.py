@@ -1,17 +1,31 @@
-"""A short list of Ethereum mainnet tokens that are known to be real.
+"""Which Ethereum mainnet tokens are known to be real, and which tickers are
+worth forging. These are two different questions and the file keeps them apart.
 
-This is not an attempt at a token registry. It exists so that a holding of a
-major asset is never classified as dust just because its price lookup failed or
-its balance happens to be small. Anything not listed here can still be shown by
-being worth something, by having been sent by one of your own wallets, or by
-being named in `trusted_assets` in the config.
+**Known** is an allowlist, and wider is better: it exists so a holding of a real
+asset is never called dust because its price lookup failed or its balance is
+small. Most of it comes from a vendored token list (`tokenlist.json`, refreshed
+by `scripts/refresh-token-list.py`), with a curated floor below it for the few
+majors no upstream list carries — stETH among them, which is not a footnote.
+
+**Forgery targets** is the opposite: a small, hand-picked set of the tickers a
+scam actually bothers to impersonate. It must stay small. An impostor is
+*excluded* — the harshest thing this app does to an asset — and hundreds of real
+tokens share a ticker with some other real token, so deriving this set from the
+allowlist would brand honest projects as frauds by coincidence. Growing the
+allowlist is safe; growing this set is not.
+
+Anything in neither can still be shown by being worth something, by having been
+sent by one of your own wallets, or by being named in `trusted_assets`.
 """
 
 from __future__ import annotations
 
+import json
 import unicodedata
+from pathlib import Path
 
-KNOWN_TOKENS: dict[str, str] = {
+# The few majors no upstream list carries, plus the ones worth stating outright.
+CURATED: dict[str, str] = {
     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
     "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
     "0x6b175474e89094c44da98b954eedeac495271d0f": "DAI",
@@ -44,6 +58,42 @@ KNOWN_TOKENS: dict[str, str] = {
     "0xe41d2489571d322189246dafa5ebde1f4699f498": "ZRX",
 }
 
+_LIST_PATH = Path(__file__).with_name("tokenlist.json")
+
+
+def _vendored_tokens() -> dict[str, str]:
+    """The token list as shipped. Read once, at import.
+
+    A missing or unreadable file is not fatal: the curated floor still covers
+    the majors, and a monitor that refuses to start because a convenience is
+    absent is worse than one that recognises fewer tokens.
+    """
+    try:
+        document = json.loads(_LIST_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {
+        address.lower(): entry["symbol"]
+        for address, entry in document.get("tokens", {}).items()
+        if isinstance(entry, dict) and entry.get("symbol")
+    }
+
+
+# Curated last: a name we have chosen deliberately wins over a list's.
+KNOWN_TOKENS: dict[str, str] = {**_vendored_tokens(), **CURATED}
+
+
+def is_native(contract_address: str) -> bool:
+    """The chain's own currency, which has no contract.
+
+    It cannot impersonate anything: it is the thing being impersonated. Adding
+    "ETH" to the forgery targets without this guard classified the native asset
+    as a forgery of itself, which emptied the feed of every ETH transfer — the
+    suite caught it immediately, which is the only reason it is a comment and
+    not an incident.
+    """
+    return not contract_address
+
 
 def is_known(contract_address: str) -> bool:
     return contract_address.lower() in KNOWN_TOKENS
@@ -67,7 +117,15 @@ _CONFUSABLES = str.maketrans(
         "ο": "O", "ν": "V",
     }
 )
-_KNOWN_SYMBOLS = {symbol.upper() for symbol in KNOWN_TOKENS.values()}
+# Deliberately not derived from KNOWN_TOKENS. See the module docstring: an
+# impostor is excluded outright, and hundreds of real tokens share a ticker with
+# some other real token. These are the ones a scam actually forges — every one
+# of them is money, or is about to be spent as though it were.
+_FORGERY_TARGETS = {
+    "USDT", "USDC", "DAI", "USDE", "USDS", "USDP", "TUSD", "BUSD", "FRAX",
+    "LUSD", "PYUSD", "ETH", "WETH", "STETH", "WSTETH", "RETH", "CBETH",
+    "BTC", "WBTC", "TBTC", "CBBTC",
+}
 
 
 def normalise_symbol(symbol: str) -> str:
@@ -97,9 +155,9 @@ def _visible(symbol: str) -> str:
 def impersonates_known(symbol: str, contract_address: str) -> bool:
     """A ticker that reads as a token this chain is known for, from a contract
     that is not it — `Ụ᠋5DT` beside the real USDT."""
-    if contract_address.lower() in KNOWN_TOKENS:
+    if is_native(contract_address) or contract_address.lower() in KNOWN_TOKENS:
         return False
-    return normalise_symbol(symbol) in _KNOWN_SYMBOLS
+    return normalise_symbol(symbol) in _FORGERY_TARGETS
 
 
 # Long enough for the longest honest ticker anyone actually uses, short enough
@@ -127,7 +185,7 @@ def looks_forged(symbol: str, contract_address: str) -> bool:
     Deliberately not a judgement about worth. A token can be worthless and
     honest; this is about a name chosen to deceive.
     """
-    if contract_address.lower() in KNOWN_TOKENS:
+    if is_native(contract_address) or contract_address.lower() in KNOWN_TOKENS:
         return False
     if impersonates_known(symbol, contract_address):
         return True
