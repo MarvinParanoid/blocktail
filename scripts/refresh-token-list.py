@@ -80,8 +80,36 @@ def main() -> int:
         "sources": provenance,
         "tokens": dict(sorted(tokens.items())),
     }
+    previous = {}
+    if OUT.exists():
+        try:
+            previous = json.loads(OUT.read_text())
+        except ValueError:
+            previous = {}
+
+    # A refresh that found nothing new should leave no diff. Stamping today's
+    # date on an unchanged file trains the reviewer to skip the diff, which is
+    # the one habit a vendored trust input cannot afford.
+    unchanged = (
+        previous.get("tokens") == payload["tokens"]
+        and previous.get("sources") == payload["sources"]
+    )
+    if unchanged:
+        print(f"unchanged: {len(tokens)} tokens, already current")
+        return 0
+
     OUT.write_text(json.dumps(payload, indent=1, sort_keys=False) + "\n")
     print(f"wrote {OUT.relative_to(Path.cwd())}: {len(tokens)} tokens")
+
+    before = len(previous.get("tokens", {}))
+    if before and before != len(tokens):
+        # ARCHITECTURE.md states the count. A design document with a stale
+        # number in it is how a reader learns not to trust the rest of it.
+        print(
+            f"note: the list went from {before} to {len(tokens)} tokens — "
+            "ARCHITECTURE.md quotes this figure, so check it before committing",
+            file=sys.stderr,
+        )
     return 0
 
 

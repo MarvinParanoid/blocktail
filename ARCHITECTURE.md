@@ -392,6 +392,52 @@ inverted. A ticker on this chain is ASCII, short and unspaced. One that is not
 an impersonation. `YRISE` and `Duhash.games` are worthless and honest about it;
 they stay unverified rather than being called forgeries.
 
+### Two lists that pull in opposite directions
+
+"Which tokens are real" and "which tickers are worth forging" were one list of
+thirty addresses answering both questions. They want opposite things, and the
+file now keeps them apart.
+
+**The allowlist wants to be wide.** It exists so a real holding is never called
+dust because its price lookup failed or its balance is small, and a token
+missing from it costs the owner a holding they have to go looking for. It comes
+from a vendored token list (`app/chains/ethereum/tokenlist.json`, following the
+[token-list standard](https://tokenlists.org)) unioned with a curated floor —
+408 tokens, from 403 listed plus 30 chosen by hand.
+
+A union, not a replacement, because upstream lists are not supersets: Uniswap's
+default carries neither stETH nor wstETH, and losing Lido staked ETH would be a
+regression dressed as an upgrade. A test pins the five that only the floor has.
+
+**The forgery-target set wants to stay narrow**, and is hand-picked: twenty-one
+tickers that are money, or are about to be spent as though they were. An
+impostor is *excluded* — the harshest thing this app does to an asset — and
+hundreds of real tokens share a ticker with some other real token. Deriving
+these from four hundred listed ones would brand honest projects as frauds by
+coincidence. Growing the allowlist is safe; growing this set is not, and a test
+asserts one is not derived from the other.
+
+### Why the list is vendored and not fetched
+
+It decides which tokens to believe, which makes it a trust input, and a trust
+input downloaded at startup is one nobody has read. Vendored, every change
+arrives as a diff a person reviews before it ships, the app behaves identically
+with no network at all, and a list server having a bad day cannot silently
+reclassify a wallet's holdings as unverified.
+
+`scripts/refresh-token-list.py` updates it — by hand, never by the app. It
+refuses to write a list with no mainnet tokens in it, and records which sources
+at which versions produced the file, because a trust input nobody can audit is
+a trust input nobody should use.
+
+### The chain's own currency is not a forgery of itself
+
+Adding `ETH` to the forgery targets classified the native asset as an
+impersonation: it has no contract, so it matched nothing in the allowlist, and
+every ETH transfer vanished from the feed. Thirty-two tests said so at once.
+`is_native()` guards it explicitly — the asset with no contract is the thing
+being impersonated, never the impersonator.
+
 ## Names for well-known addresses
 
 About fifty addresses — routers, bridges, lending pools, exchange wallets —

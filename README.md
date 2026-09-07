@@ -54,6 +54,10 @@ signature, and it has no code path that could send a transaction.
   in an inspector docked beside the feed, or as a sheet on a phone.
 - Hides dust and tokens nothing vouches for, counts the two apart, and says how
   many of each. Nothing is deleted: one click brings them back.
+- Knows about 400 real tokens from a vendored
+  [token list](https://tokenlists.org), so a holding is not called dust because
+  its price lookup failed. The list ships with the app rather than being fetched
+  at startup — it decides what to believe, and it works with no network at all.
 - Groups the feed by day — Today, Yesterday, then dates — and gives rows that
   arrive on an automatic refresh a brief highlight before they settle.
 - Totals what you hold, across every wallet or one of them, in a collapsible
@@ -134,13 +138,17 @@ labels:                  # optional names for external addresses
   "0x28C6c06298d514Db089934071355E5743bf21d60": "Binance"
 
 ignore_assets: []        # optional contracts to hide (airdropped spam)
+trusted_assets: []       # optional contracts to vouch for, when the filter
+                         # does not recognise something you know is real
 ```
 
 Airdropped spam is not a hypothetical: on live mainnet data, every address
 tested — including Vitalik's and the Ethereum Foundation's — held more than 200
-ERC-20s, of which only a couple of dozen had any market price at all. The feed
-sorts unpriced assets last and the dashboard caps how many it shows, so they
-stay out of the way; `ignore_assets` is how you make specific ones disappear.
+ERC-20s, of which only a couple of dozen had any market price at all. Most of
+that is filtered without your help — see
+[What is worth showing](ARCHITECTURE.md#what-is-worth-showing) — and the two
+keys above are the manual overrides: `trusted_assets` vouches for a token the
+filter does not recognise, `ignore_assets` makes specific ones disappear.
 
 ### Mine, or just watched
 
@@ -361,6 +369,21 @@ docker compose cp blocktail:/data/backup.db ./blocktail-backup.db
 
 Schema changes ship as migrations and are applied on start, so upgrading is
 `git pull && docker compose up -d --build`. The database is never recreated.
+
+### Keeping the token list current
+
+Which tokens count as real comes from a token list vendored into the repository
+at `app/chains/ethereum/tokenlist.json`. It is deliberately not fetched at
+runtime: it decides what to believe, so every change should be a diff somebody
+reads, and the app should work with no network at all.
+
+```bash
+python scripts/refresh-token-list.py   # then review the diff and commit it
+```
+
+Nothing breaks if you never run it — an unlisted token can still be shown by
+being worth something, by having been sent by one of your own wallets, or by
+being named in `trusted_assets`.
 
 ### Health
 
