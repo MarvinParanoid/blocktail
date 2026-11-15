@@ -17,6 +17,7 @@ import httpx
 
 from app.chains.ethereum.chain import ZERO_ADDRESS, EthereumChain
 from app.models import NATIVE, AssetRef, Balance, TransactionCost, Transfer, TransferKind
+from app.redact import describe_failure
 
 log = logging.getLogger(__name__)
 
@@ -89,16 +90,16 @@ class AlchemyProvider:
         self._request_id += 1
         payload = {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params}
         delay = 0.5
-        last_error: Exception | None = None
+        last_error = "no attempt made"
+        last_status: int | None = None
 
         for attempt in range(self._max_retries):
             try:
                 async with self._semaphore:
                     response = await self._client.post(self._url, json=payload)
                 if response.status_code in _RETRY_STATUS:
-                    last_error = ProviderError(
-                        f"{method}: HTTP {response.status_code} from provider"
-                    )
+                    last_status = response.status_code
+                    last_error = f"HTTP {response.status_code}"
                     if response.status_code in _THROTTLED:
                         # Backing off by the usual step just walks into the same
                         # ceiling; a throttled caller has to actually wait.
@@ -114,7 +115,7 @@ class AlchemyProvider:
             except ProviderError:
                 raise
             except (httpx.HTTPError, ValueError) as exc:
-                last_error = exc
+                last_status, last_error = describe_failure(exc)
 
             if attempt < self._max_retries - 1:
                 # Jitter, so several stalled requests do not all resume together
@@ -122,7 +123,12 @@ class AlchemyProvider:
                 await asyncio.sleep(delay * (1 + random.random() * 0.4))
                 delay *= 2
 
-        raise ProviderError(f"{method} failed after {self._max_retries} attempts: {last_error}")
+        hint = ""
+        if last_status == 401:
+            hint = " (the provider rejected the key: check ALCHEMY_API_KEY)"
+        raise ProviderError(
+            f"{method} failed after {self._max_retries} attempts: {last_error}{hint}"
+        )
 
     # -------------------------------------------------------------- queries
 

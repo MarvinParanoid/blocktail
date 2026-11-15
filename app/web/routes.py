@@ -20,6 +20,7 @@ from decimal import Decimal
 from app.chains.ethereum.known_assets import KNOWN_TOKENS, looks_forged
 
 from app.models import NATIVE, Direction, Scope
+from app.redact import redact
 from app.web.assets import static_url
 from app.web.format import (
     Relevance,
@@ -932,7 +933,7 @@ def healthz(request: Request):
         status = ctx.db.get_sync_status(ctx.chain.chain_id)
     except Exception as exc:  # database unreachable -> genuinely unhealthy
         log.exception("health check failed")
-        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=503)
+        return JSONResponse({"status": "error", "detail": redact(str(exc))}, status_code=503)
 
     # This path is exempt from authentication so the container healthcheck can
     # reach it, so with auth on it says nothing about the instance beyond being

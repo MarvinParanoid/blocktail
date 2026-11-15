@@ -15,6 +15,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 
 from app.models import AssetRef
+from app.redact import describe_failure
 
 log = logging.getLogger(__name__)
 
@@ -76,17 +77,18 @@ class AlchemyPrices:
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         delay = 0.5
-        last: Exception | None = None
+        last = "no attempt made"
         for attempt in range(self._max_retries):
             try:
                 response = await self._client.request(method, f"{self._base}{path}", **kwargs)
                 if response.status_code in _RETRY_STATUS:
-                    last = PriceError(f"prices {path}: HTTP {response.status_code}")
+                    last = f"HTTP {response.status_code}"
                 else:
                     response.raise_for_status()
                     return response.json()
             except (httpx.HTTPError, ValueError) as exc:
-                last = exc
+                # The URL carries the key; the status and type are the diagnosis.
+                _, last = describe_failure(exc)
             if attempt < self._max_retries - 1:
                 await asyncio.sleep(delay)
                 delay *= 2

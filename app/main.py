@@ -25,6 +25,7 @@ from app.config import (
 )
 from app.db import Database
 from app.prices import PriceSource
+from app.redact import install_log_redaction, register_secret
 from app.sync import Indexer
 from app.web.routes import router
 
@@ -107,6 +108,20 @@ def build_context(
     )
 
 
+def protect_secrets(settings: Settings) -> None:
+    """Register what must never be written down, and scrub the log from here on.
+
+    The key is registered on its own and, when there is no key, the whole
+    provider URL: an ALCHEMY_URL pointing at a proxy may carry its credential
+    anywhere in the URL.
+    """
+    register_secret(settings.alchemy_api_key)
+    if not settings.alchemy_api_key:
+        register_secret(settings.alchemy_url)
+    register_secret(settings.auth_password)
+    install_log_redaction()
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -116,6 +131,7 @@ def create_app(
     run_indexer: bool = True,
 ) -> FastAPI:
     settings = settings or load_settings()
+    protect_secrets(settings)
     config = config or load_watch_config(settings.config_path)
     ctx = build_context(settings, config, provider=provider, price_source=price_source)
 
@@ -191,6 +207,7 @@ def main() -> FastAPI:
         raise SystemExit(2) from None
 
     configure_logging(settings.log_level)
+    protect_secrets(settings)
     log.info("supported chains: %s", ", ".join(supported_chain_list()))
 
     # The indexer runs inside the web process, so a second worker means a second

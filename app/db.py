@@ -23,6 +23,7 @@ from app.models import (
     SyncStatus,
     Transfer,
 )
+from app.redact import redact
 
 log = logging.getLogger(__name__)
 
@@ -742,7 +743,9 @@ class Database:
             head_block=row["head_block"],
             last_success_at=row["last_success_at"],
             last_attempt_at=row["last_attempt_at"],
-            last_error=row["last_error"],
+            # Redacted on the way out as well as on the way in: a database
+            # written by an older version can still hold an unscrubbed message.
+            last_error=redact(row["last_error"]),
             backfill_done=bool(row["backfill_done"]),
             requested_from_block=row["requested_from_block"],
             activity_count=self.activity_count(),
@@ -784,7 +787,10 @@ class Database:
         )
 
     def record_failure(self, chain_id: str, error: str) -> None:
-        self._upsert_sync(chain_id, {"last_error": error[:500]})
+        # Every error the UI and the JSON API will ever show passes through
+        # here, so this is where it is scrubbed. Before truncating: a cut in
+        # the middle of a key would leave half of it unrecognisable.
+        self._upsert_sync(chain_id, {"last_error": (redact(error) or "")[:500]})
 
     def _upsert_sync(self, chain_id: str, values: dict[str, object]) -> None:
         conn = self.connect()
