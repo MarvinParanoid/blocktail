@@ -26,6 +26,8 @@ import pytest
 from conftest import DESKTOP, MOBILE, SMALL, TABLET, run_axe, viewports
 from stand import REMOVABLE
 
+from tests.conftest import tx_hash
+
 ROWS = "#feed-body tr[data-activity]"
 
 
@@ -162,6 +164,47 @@ def test_a_slow_answer_to_an_old_search_is_never_shown(session, viewport):
     assert counterparties and all("Binance" in c for c in counterparties), \
         session.where(f"rows answer 'Binance': {counterparties[:5]}")
     assert box.input_value() == "Binance" and query(page.url).get("q") == "Binance"
+
+
+# ------------------------------------------------ S7.1: what search matches
+
+
+def search_for(page, text):
+    box = page.locator("#search")
+    box.fill("")
+    box.press_sequentially(text, delay=15)
+    settle(page)
+
+
+@viewports(DESKTOP)
+def test_search_finds_a_built_in_name_within_the_chosen_wallet(session, viewport):
+    page = session.open("/")
+    page.locator(".wallet__hit", has_text="Trading").click()
+    settle(page)
+    search_for(page, "universal router")
+    hashes = page.locator(ROWS).evaluate_all("rows => rows.map(r => r.dataset.tx)")
+    assert hashes == [tx_hash("ui-to-router")], session.where(f"in Trading: {hashes}")
+    assert "Uniswap" in page.locator(ROWS).first.inner_text()
+
+    page.locator(".wallet__hit", has_text="Cold").click()
+    settle(page)
+    assert rows(page).count() == 0, session.where("Cold never dealt with the router")
+
+    page.locator(".wallets__group--all").click()
+    settle(page)
+    assert rows(page).count() == 1, session.where("all activity: the one row")
+    assert query(page.url) == {"q": "universal router"}, session.where(page.url)
+
+
+@pytest.mark.parametrize("text", ["%", "_", "\\", "' OR 1=1 --"])
+@viewports(DESKTOP)
+def test_search_text_is_never_a_pattern(session, viewport, text):
+    page = session.open("/")
+    search_for(page, text)
+    assert rows(page).count() == 0, session.where(f"{text!r} matches no name in the stand")
+    assert "No activity matches" in page.locator("#feed-body").inner_text()
+    search_for(page, "")
+    assert rows(page).count() >= 20
 
 
 # ------------------------------------------------- U-08: one request path

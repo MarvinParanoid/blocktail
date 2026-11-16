@@ -171,20 +171,16 @@ test marked `xfail(strict=True)` with its id: it is expected to fail today,
 and the day the defect is fixed it passes unexpectedly and **fails the run**,
 so the marker is removed together with the defect.
 
-None in the browser tests today. Two are kept in the main suite
-(`tests/test_web.py`), because fixing them changes the search query in
-`app/db.py`, which S7 was not to touch:
-
-| Audit id | Test | What fails |
-| --- | --- | --- |
-| U-09 | `test_search_finds_built_in_address_names` | "universal router" does not find the router's transfers |
-| — | `test_search_wildcards_are_literal` | `%` and `_` in a search are LIKE wildcards: `_` matches everything |
+None today, in the browser tests or in the main suite.
 
 Fixed and since removed from this list, by the strict markers failing as
 designed: U-03 (overflow at 390 and 320, and the inspector's close button
 pushed off screen by it) and U-02 (the empty holdings sheet), both in S5;
 U-06 (feed rows not reachable by keyboard), in S6; U-10 (a paste did not
-search), in S7.
+search), in S7; U-09 (built-in names not searchable) and `%`/`_` read as
+LIKE wildcards, in S7.1 — `tests/test_search.py` covers search, and
+`test_interaction.py` checks it in the page after filtering and within a
+wallet.
 
 Accessibility (U-07) was a baseline of known axe-core rules until S6, which
 fixed them (`color-contrast`, `region`, `empty-table-header`, `select-name`)

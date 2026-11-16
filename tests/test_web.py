@@ -2353,39 +2353,6 @@ def test_a_watched_wallet_has_no_missing_notice(client):
     assert 'class="scope-missing"' not in client.get("/", params={"wallet": main.id}).text
 
 
-# U-09 and LIKE escaping belong to S7 in the roadmap, but both change the
-# search query in app/db.py, which S7 was told not to touch. They stay here as
-# known defects until that is allowed.
-
-@pytest.mark.xfail(strict=True, reason="known defect U-09: search ignores built-in names")
-def test_search_finds_built_in_address_names(settings, watch_config, provider, prices,
-                                             sample_transfers):
-    router = "0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"
-    provider.transfers = [*sample_transfers, transfer(
-        "to-router", sender=MAIN, recipient=router, amount=10**17, block=21_000_045)]
-    app = create_app(settings=settings, config=watch_config, provider=provider,
-                     price_source=prices, run_indexer=False)
-    with TestClient(app) as client:
-        run(app.state.ctx.indexer.run_once())
-        by_address = client.get("/activity", params={"q": router.lower()}).text
-        assert tx_hash_in(by_address, "to-router"), "the transfer is indexed"
-        body = client.get("/activity", params={"q": "universal router"}).text
-        assert tx_hash_in(body, "to-router")
-
-
-@pytest.mark.xfail(strict=True, reason="known defect: % and _ are LIKE wildcards in search")
-def test_search_wildcards_are_literal(client):
-    everything = client.get("/activity").text.count('data-activity="')
-    assert everything > 0
-    assert client.get("/activity", params={"q": "_"}).text.count('data-activity="') == 0
-    assert client.get("/activity", params={"q": "%"}).text.count('data-activity="') == 0
-
-
-def tx_hash_in(body: str, seed: str) -> bool:
-    from tests.conftest import tx_hash
-    return tx_hash(seed) in body
-
-
 def test_the_form_carries_show_dust_from_the_address(client):
     """Opened with ?dust=show, the next request the form makes — a filter or
     the timed refresh — must still ask for it."""

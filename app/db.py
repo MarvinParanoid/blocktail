@@ -50,6 +50,23 @@ def _decimals(alias: str) -> str:
     return f"CASE WHEN {alias}.decimals_known THEN {alias}.decimals END AS decimals"
 
 
+# The search box is text, not a pattern: in LIKE, % and _ are wildcards, so
+# each is escaped, and so is the escape character itself — first, so the
+# backslashes added for the others are not escaped again. Every LIKE that
+# takes a pattern from here says ESCAPE '\'.
+LIKE_ESCAPE = "\\"
+
+
+def like_pattern(term: str) -> str:
+    """A LIKE pattern matching ``term`` anywhere, every character literal."""
+    escaped = (
+        term.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
+        .replace("%", LIKE_ESCAPE + "%")
+        .replace("_", LIKE_ESCAPE + "_")
+    )
+    return f"%{escaped}%"
+
+
 class Database:
     """Owns the SQLite file. Connections are per-thread; FastAPI runs sync
     endpoints in a threadpool and the indexer writes from another thread."""
@@ -570,8 +587,13 @@ class Database:
         search: str,
         dust_thresholds: dict[int, float] | None = None,
         exclude_assets: set[int] | None = None,
+        search_addresses: tuple[str, ...] | list[str] = (),
     ) -> tuple[list[str], dict[str, object]]:
-        """WHERE clauses shared by the feed page and its count."""
+        """WHERE clauses shared by the feed page and its count.
+
+        ``search_addresses`` are addresses whose name the database does not
+        hold — the chain's built-in names — that the caller found ``search``
+        in. A row to or from one of them matches too (audit U-09)."""
         where: list[str] = []
         params: dict[str, object] = {}
 
@@ -630,12 +652,21 @@ class Database:
             params["asset_id"] = asset_id
 
         if term := search.strip().lower():
-            params["like"] = f"%{term}%"
-            where.append(
-                "(a.tx_hash LIKE :like OR a.from_address LIKE :like OR a.to_address LIKE :like"
-                " OR ast.symbol LIKE :like OR fa.name LIKE :like OR ta.name LIKE :like"
-                " OR fl.label LIKE :like OR tl.label LIKE :like)"
-            )
+            params["like"] = like_pattern(term)
+            matches = [
+                f"{column} LIKE :like ESCAPE '{LIKE_ESCAPE}'"
+                for column in ("a.tx_hash", "a.from_address", "a.to_address", "ast.symbol",
+                               "fa.name", "ta.name", "fl.label", "tl.label")
+            ]
+            if search_addresses:
+                names = []
+                for index, known in enumerate(search_addresses):
+                    params[f"named{index}"] = known
+                    names.append(f":named{index}")
+                listed = ", ".join(names)
+                matches.append(f"a.from_address IN ({listed})")
+                matches.append(f"a.to_address IN ({listed})")
+            where.append("(" + " OR ".join(matches) + ")")
 
         return where, params
 
@@ -650,12 +681,14 @@ class Database:
         exclude_assets: set[int] | None = None,
         cursor: tuple[int, int] | None = None,
         limit: int = 50,
+        search_addresses: tuple[str, ...] | list[str] = (),
     ) -> list[sqlite3.Row]:
         """``account_ids`` is the scope: one account, the owned ones, or None
         for every monitored account."""
         where, params = self._activity_filters(
             account_ids=account_ids, direction=direction, asset_id=asset_id, search=search,
             dust_thresholds=dust_thresholds, exclude_assets=exclude_assets,
+            search_addresses=search_addresses,
         )
         params["limit"] = limit + 1
 
@@ -679,11 +712,13 @@ class Database:
         search: str = "",
         dust_thresholds: dict[int, float] | None = None,
         exclude_assets: set[int] | None = None,
+        search_addresses: tuple[str, ...] | list[str] = (),
     ) -> int:
         """How many activities the current filters match, for "N transactions"."""
         where, params = self._activity_filters(
             account_ids=account_ids, direction=direction, asset_id=asset_id, search=search,
             dust_thresholds=dust_thresholds, exclude_assets=exclude_assets,
+            search_addresses=search_addresses,
         )
         sql = (
             "SELECT COUNT(*) FROM activities a"

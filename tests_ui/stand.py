@@ -66,6 +66,7 @@ STRANGERS = [address(f"ui-stranger-{i}") for i in range(12)]
 BINANCE = address("ui-binance")
 # Not in the config: added from the page by a test, then removed.
 REMOVABLE = address("ui-removable")
+ROUTER = "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad"   # built in: Uniswap: Universal Router
 
 WALLETS = [
     {"name": "Main", "address": MAIN},
@@ -138,6 +139,9 @@ def _transfers(now: int) -> list:
     # Labelled counterparty.
     add("ui-to-binance", COLD, BINANCE, 1_000 * 10**6, blocks_ago=900, asset=USDC,
         kind=TransferKind.TOKEN, log_index=2)
+    # A contract the app has a built-in name for, and no label in the config:
+    # search finds it by "Uniswap: Universal Router" (S7.1).
+    add("ui-to-router", TRADE, ROUTER, 3 * E18 // 10, blocks_ago=2 * DAY_BLOCKS)
     # A swap: four transfers in one transaction.
     add(SWAP_SEED, MAIN, STRANGERS[0], 5 * E18, blocks_ago=200)
     add(SWAP_SEED, STRANGERS[0], MAIN, 15_603 * 10**6, blocks_ago=200, asset=USDC,
