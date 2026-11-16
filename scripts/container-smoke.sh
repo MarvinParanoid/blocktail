@@ -4,6 +4,11 @@
 # and the compose plugin are installed:
 #
 #   scripts/container-smoke.sh [image tag]
+#   scripts/container-smoke.sh --prebuilt <image tag>   an image already built
+#
+# --prebuilt runs every check on an image someone else built — the release
+# image CI ships — instead of building one: nothing was planted in its build,
+# so it looks for files that must never be in an image instead.
 #
 # Nothing leaves the machine: the provider URL points at a closed port on the
 # container's own loopback, prices are off, and every secret is a canary made
@@ -18,6 +23,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PREBUILT=""
+if [ "${1:-}" = "--prebuilt" ]; then
+  PREBUILT=1
+  shift
+  [ -n "${1:-}" ] || { echo "usage: container-smoke.sh --prebuilt <image tag>" >&2; exit 2; }
+fi
 TAG="${1:-blocktail:smoke}"
 WORK="$(mktemp -d)"
 PROJECT="blocktail-smoke-$$"
@@ -59,26 +70,41 @@ wait_healthy() {
 
 # --------------------------------------------------------------- the image
 
-say "building $TAG from the tracked files plus planted local secrets"
-mkdir -p "$WORK/src"
-(cd "$ROOT" && git ls-files -z | xargs -0 cp --parents -t "$WORK/src")
-printf 'ALCHEMY_API_KEY=%s\nAUTH_PASSWORD=%s\n' "$KEY" "$PASSWORD" > "$WORK/src/.env"
-printf 'wallets: []\n# %s\n' "$KEY" > "$WORK/src/wallets.yml"
-mkdir -p "$WORK/src/data"
-printf '%s' "$KEY" > "$WORK/src/data/blocktail.db"
-docker build -q -t "$TAG" "$WORK/src" >/dev/null
+if [ -n "$PREBUILT" ]; then
+  docker image inspect "$TAG" >/dev/null 2>&1 || fail "no image $TAG to check"
+  say "checking the prebuilt $TAG ($(docker image inspect -f '{{.Id}}' "$TAG"))"
+else
+  say "building $TAG from the tracked files plus planted local secrets"
+  mkdir -p "$WORK/src"
+  (cd "$ROOT" && git ls-files -z | xargs -0 cp --parents -t "$WORK/src")
+  printf 'ALCHEMY_API_KEY=%s\nAUTH_PASSWORD=%s\n' "$KEY" "$PASSWORD" > "$WORK/src/.env"
+  printf 'wallets: []\n# %s\n' "$KEY" > "$WORK/src/wallets.yml"
+  mkdir -p "$WORK/src/data"
+  printf '%s' "$KEY" > "$WORK/src/data/blocktail.db"
+  docker build -q -t "$TAG" "$WORK/src" >/dev/null
+fi
 
 uid="$(docker run --rm --entrypoint id "$TAG" -u)"
 gid="$(docker run --rm --entrypoint id "$TAG" -g)"
 [ "$uid" != "0" ] || fail "the image runs as root"
 say "ok: the image runs as uid $uid"
 
-found="$(docker run --rm --entrypoint sh "$TAG" -c \
-  'grep -rIl --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev -- "$0" / 2>/dev/null || true' "$KEY")"
-[ -z "$found" ] || fail "a planted secret is in the image: $found"
-docker image inspect "$TAG" | grep -q -- "$KEY" && fail "a planted secret is in the image config"
-docker history --no-trunc "$TAG" | grep -q -- "$KEY" && fail "a planted secret is in the image history"
-say "ok: no planted secret in the image's files, config or history"
+if [ -n "$PREBUILT" ]; then
+  found="$(docker run --rm --entrypoint sh "$TAG" -c 'find / -xdev \( -name .env -o -name "wallets.yml" \
+    -o -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "*.pem" -o -name "id_*" \) \
+    -not -path "/proc/*" 2>/dev/null || true')"
+  [ -z "$found" ] || fail "files that must never ship are in the image: $found"
+  docker image inspect -f '{{json .Config.Env}}' "$TAG" | grep -qE '(ALCHEMY_API_KEY|ALCHEMY_URL|AUTH_USER|AUTH_PASSWORD)=' \
+    && fail "the image config carries a credential: $(docker image inspect -f '{{json .Config.Env}}' "$TAG")"
+  say "ok: no .env, wallets.yml, database, key file or credential variable in the image"
+else
+  found="$(docker run --rm --entrypoint sh "$TAG" -c \
+    'grep -rIl --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev -- "$0" / 2>/dev/null || true' "$KEY")"
+  [ -z "$found" ] || fail "a planted secret is in the image: $found"
+  docker image inspect "$TAG" | grep -q -- "$KEY" && fail "a planted secret is in the image config"
+  docker history --no-trunc "$TAG" | grep -q -- "$KEY" && fail "a planted secret is in the image history"
+  say "ok: no planted secret in the image's files, config or history"
+fi
 
 # ----------------------------------------------------------------- compose
 

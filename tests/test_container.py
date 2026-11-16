@@ -243,17 +243,47 @@ def test_ci_runs_the_checks_this_project_relies_on():
 
 
 def test_ci_rolls_back_to_what_production_runs():
-    """The previous release (main) on this one's database, and the first
-    deploy onto a legacy server and back, for real (tests/test_rollback.py,
-    scripts/rollback-smoke.sh). The base is required there, not skipped."""
-    job = WORKFLOWS["tests.yml"]["jobs"]["rollback"]
-    checkout = [s for s in job["steps"] if "actions/checkout" in s.get("uses", "")][0]
-    assert checkout["with"]["fetch-depth"] == 0, "the previous release is in the history"
-    steps = {s.get("run", ""): s for s in job["steps"]}
-    test = next(s for run, s in steps.items() if "tests/test_rollback.py" in run)
+    """The previous release (main) on this one's database (tests/test_rollback.py,
+    required there, not skipped); its image after a real first deploy and a
+    rollback is in the image job (scripts/rollback-smoke.sh)."""
+    jobs = WORKFLOWS["tests.yml"]["jobs"]
+    for name in ("rollback", "image"):
+        checkout = [s for s in jobs[name]["steps"] if "actions/checkout" in s.get("uses", "")][0]
+        assert checkout["with"]["fetch-depth"] == 0, f"{name}: the previous release is in the history"
+    test = next(s for s in jobs["rollback"]["steps"] if "tests/test_rollback.py" in s.get("run", ""))
     assert test["env"]["BLOCKTAIL_ROLLBACK_REQUIRED"] == "1"
     assert test["env"]["BLOCKTAIL_ROLLBACK_BASE"]
-    assert any(run.startswith("scripts/rollback-smoke.sh") for run in steps)
+    assert any(s.get("run", "").startswith("scripts/rollback-smoke.sh") for s in jobs["image"]["steps"])
+
+
+def test_ci_ships_the_image_it_checked():
+    """One release image, built from the clean checkout under the tag deploy.sh
+    looks for, linux/amd64, labelled with its commit; every check after the
+    build runs on it; it is packed and kept only after all of them, and only
+    for a push to an rc/ branch."""
+    steps = WORKFLOWS["tests.yml"]["jobs"]["image"]["steps"]
+    runs = [s.get("run", "") for s in steps]
+    build = next(i for i, r in enumerate(runs) if "docker build" in r and "RELEASE_IMAGE" in r)
+    assert "--platform linux/amd64" in runs[build]
+    assert "org.opencontainers.image.revision=$(git rev-parse HEAD)" in runs[build]
+    assert 'blocktail:$(git rev-parse --short=12 HEAD)' in runs[build]
+    later = " ".join(runs[build + 1:])
+    assert 'scripts/container-smoke.sh --prebuilt "$RELEASE_IMAGE"' in later
+    assert "scripts/rollback-smoke.sh" in later
+    pack = next(i for i, r in enumerate(runs) if r.startswith("scripts/release-image.sh"))
+    upload = next(i for i, s in enumerate(steps) if "upload-artifact" in s.get("uses", ""))
+    checks = [i for i, r in enumerate(runs) if "smoke" in r]
+    assert build < min(checks) and max(checks) < pack < upload
+    only_rc = "github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/')"
+    assert steps[pack]["if"] == only_rc and steps[upload]["if"] == only_rc
+    assert steps[upload]["with"]["if-no-files-found"] == "error"
+
+
+def test_the_release_scripts_touch_no_host():
+    for name in ("release-image.sh", "container-smoke.sh"):
+        script = (ROOT / "scripts" / name).read_text()
+        for word in ("ssh", "scripts/deploy.sh", "BLOCKTAIL_HOST", "docker push", "docker login"):
+            assert word not in script, (name, word)
 
 
 def test_the_rollback_smoke_runs_the_server_half_on_this_machine_only():

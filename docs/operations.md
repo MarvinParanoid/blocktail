@@ -60,6 +60,30 @@ nothing else, so a working-tree file, an ignored file or a local `.env` can
 never reach the server, and the tests that passed are the tests of exactly
 what ships.
 
+### Shipping the image CI checked, instead of building on the server
+
+The server has one CPU and under 1 GB of memory, shared with other services; a
+build there is slow and competes with them. A push to an `rc/` branch leaves
+the release image in CI — the one its container smoke, first-deploy and
+rollback smoke ran on — as the `release-image` artifact (kept 14 days):
+`blocktail-<sha12>.tar.gz`, `image.json`, `app-files.txt`, `packages.txt`,
+`SHA256SUMS` (scripts/release-image.sh says what each holds and what was
+checked). Loaded on the server under its tag before the deploy, it is used as
+it is: `remote-deploy.sh` never rebuilds a tag that exists.
+
+```bash
+git switch --detach <sha>                     # the commit the artifact is of
+gh run download <run id> -n release-image -D /tmp/release
+(cd /tmp/release && sha256sum -c SHA256SUMS)
+gunzip -c /tmp/release/blocktail-<sha12>.tar.gz | ssh "$HOST" docker load
+ssh "$HOST" docker image inspect -f '{{.Id}}' blocktail:<sha12>   # = "id" in image.json
+scripts/deploy.sh                             # says "already built; not rebuilding"
+```
+
+Loading adds an image and changes nothing that runs. Deploy from the same
+commit: `deploy.sh` ships `git archive HEAD` and the server looks for
+`blocktail:<HEAD's sha12>`; from any other commit it would build instead.
+
 ### On the server
 
 ```

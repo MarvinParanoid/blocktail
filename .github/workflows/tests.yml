@@ -105,16 +105,13 @@ jobs:
 
   # The way back. `remote-deploy.sh rollback` starts the previous image and
   # does not restore the database, so the previous release must run on the
-  # database this one leaves: its own code on a migrated synthetic database,
-  # and its image under this compose after a real first deploy onto a legacy
-  # server and a rollback (scripts/rollback-smoke.sh: local Docker, a
-  # directory it made, no host). The previous release is main — on main
-  # itself, the main before this push.
+  # database this one leaves: its own code on a synthetic database this one
+  # has migrated (tests/test_rollback.py). Its image under this compose, after
+  # a real first deploy and a rollback, is in the image job. The previous
+  # release is main — on main itself, the main before this push.
   rollback:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      BLOCKTAIL_ROLLBACK_BASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'HEAD^1' || 'origin/main' }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -127,22 +124,36 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest tests/test_rollback.py
         env:
-          BLOCKTAIL_ROLLBACK_BASE: ${{ env.BLOCKTAIL_ROLLBACK_BASE }}
+          BLOCKTAIL_ROLLBACK_BASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'HEAD^1' || 'origin/main' }}
           BLOCKTAIL_ROLLBACK_REQUIRED: "1"
-      - run: scripts/rollback-smoke.sh "$BLOCKTAIL_ROLLBACK_BASE"
 
-  # The image as it ships, run the way docker-compose.yml runs it.
+  # The image as it ships. Two builds: one from the tracked files with secrets
+  # planted beside them, to show none gets in; and the release image, from
+  # this clean checkout, tagged as deploy.sh names it. The release image is
+  # the one every later step runs — the smoke, the first deploy onto a legacy
+  # server and the rollback — and, on an rc/ branch, the one kept as the
+  # release artifact: what is shipped is what was checked, never a rebuild.
   image:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    env:
+      BLOCKTAIL_ROLLBACK_BASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'HEAD^1' || 'origin/main' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      - run: docker build -t blocktail:ci .
+        with:
+          fetch-depth: 0          # the previous release, for the rollback smoke
+          persist-credentials: false
+      - name: build the release image
+        run: |
+          tag="blocktail:$(git rev-parse --short=12 HEAD)"
+          docker build --platform linux/amd64 \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" -t "$tag" .
+          echo "RELEASE_IMAGE=$tag" >> "$GITHUB_ENV"
       # A container that cannot start is a broken release, and the app validates
       # its whole configuration before it serves anything.
       - name: refuses to start without configuration
         run: |
-          if docker run --rm blocktail:ci > /tmp/out 2>&1; then
+          if docker run --rm "$RELEASE_IMAGE" > /tmp/out 2>&1; then
             cat /tmp/out; echo "started without configuration"; exit 1
           fi
           cat /tmp/out
@@ -150,5 +161,23 @@ jobs:
       # Non-root, read-only root, no capabilities, the volume and WAL, the
       # healthcheck, auth and Host policy through the published port, a clean
       # stop, no secret in the image or the log, and a backup and restore.
-      - name: container smoke
+      - name: container smoke, with secrets planted in the build
         run: scripts/container-smoke.sh blocktail:ci
+      - name: container smoke of the release image
+        run: scripts/container-smoke.sh --prebuilt "$RELEASE_IMAGE"
+      # The first deploy onto a legacy server (main's image and compose) and a
+      # rollback to it, with the real remote-deploy.sh: it deploys the release
+      # image, never a rebuild (local Docker, a directory it made, no host).
+      - name: first deploy and rollback
+        run: scripts/rollback-smoke.sh "$BLOCKTAIL_ROLLBACK_BASE"
+      - name: the release artifact
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/')
+        run: scripts/release-image.sh "$RELEASE_IMAGE" release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/')
+        with:
+          name: release-image
+          path: release/
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0

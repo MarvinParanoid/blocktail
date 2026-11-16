@@ -43,6 +43,9 @@ PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0))
 URL="http://127.0.0.1:$PORT"
 SHA="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
 MADE_IMAGES=()
+# An image of HEAD built before this ran — the release image CI ships — is
+# the one deployed here (remote-deploy.sh never rebuilds a tag), and is kept.
+RELEASE_ID="$(docker image inspect -f '{{.Id}}' "blocktail:$SHA" 2>/dev/null || true)"
 
 say() { printf 'rollback-smoke: %s\n' "$*"; }
 fail() { printf 'rollback-smoke: FAILED: %s\n' "$*" >&2; dump; exit 1; }
@@ -55,8 +58,10 @@ cleanup() {
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker volume rm "${PROJECT}_blocktail-data" >/dev/null 2>&1 || true
+  local made='^blocktail:(baseline-|'"$SHA"'$)'
+  [ -z "$RELEASE_ID" ] || made='^blocktail:baseline-'
   for image in "${MADE_IMAGES[@]}" $(docker image ls blocktail --format '{{.Repository}}:{{.Tag}}' \
-      | grep -E '^blocktail:(baseline-|'"$SHA"'$)' || true); do
+      | grep -E "$made" || true); do
     docker rmi -f "$image" >/dev/null 2>&1 || true
   done
   rm -rf "$WORK" 2>/dev/null || sudo rm -rf "$WORK" 2>/dev/null || true
@@ -188,6 +193,11 @@ baseline="$(sed -n 's/.*recorded as \(blocktail:baseline-[0-9a-f]*\).*/\1/p' "$W
 [ -n "$baseline" ] || { cat "$WORK/deploy.log" >&2; fail "the running image was not adopted as the baseline"; }
 [ "$(docker image inspect -f '{{.Id}}' "$baseline")" = "$legacy_id" ] || fail "$baseline is not $LEGACY"
 new_id="$(docker image inspect -f '{{.Id}}' "blocktail:$SHA")"
+if [ -n "$RELEASE_ID" ]; then
+  [ "$new_id" = "$RELEASE_ID" ] || fail "the deploy replaced the prebuilt blocktail:$SHA"
+  grep -q "already built" "$WORK/deploy.log" || fail "the deploy rebuilt the prebuilt image"
+  say "ok: the deploy used the prebuilt blocktail:$SHA ($RELEASE_ID)"
+fi
 [ "$(cat "$REMOTE/last-good")" = "blocktail:$SHA $new_id" ] || fail "last-good: $(cat "$REMOTE/last-good")"
 backup=""
 for path in "$REMOTE/backups"/*"-before-$SHA-from-baseline-"*.db; do
