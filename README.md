@@ -366,11 +366,12 @@ never recreated, and migrations only move forward.
 ### Deploying updates
 
 `scripts/deploy.sh` ships the committed `HEAD` — never the working tree — after
-running the tests and lint on exactly what it ships. On the server it builds an
-image tagged with the commit, keeps the running one as `blocktail:previous`,
-backs up SQLite with its online backup API (verified, last five kept), starts
-the new image and waits for `/healthz`. It refuses a dirty tree, failing tests
-and a failed backup, and there is no switch to skip a check.
+running the tests and lint on exactly what it ships. On the server it takes a
+lock so two deploys never overlap, builds an image tagged with the commit (once
+per commit), backs up SQLite with its online backup API (verified, rotated),
+starts the new image, waits for `/healthz`, and records it as the last good
+version only if it passes. It refuses a dirty tree, failing tests and a failed
+backup, and there is no switch to skip a check.
 
 ```bash
 scripts/deploy.sh --check-only   # everything except sending

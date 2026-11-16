@@ -84,7 +84,14 @@ def check(path: Path) -> dict:
         conn.close()
 
 
-def backup(source: Path, dest_dir: Path, label: str, keep: int, missing_ok: bool) -> Path | None:
+def backup(
+    source: Path,
+    dest_dir: Path,
+    label: str,
+    keep: int,
+    missing_ok: bool,
+    protect: str | None = None,
+) -> Path | None:
     if not source.is_file():
         if missing_ok:
             return None
@@ -94,7 +101,7 @@ def backup(source: Path, dest_dir: Path, label: str, keep: int, missing_ok: bool
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    safe_label = "".join(c if c.isalnum() or c in "-_." else "_" for c in label)[:40]
+    safe_label = "".join(c if c.isalnum() or c in "-_." else "_" for c in label)[:80]
     final = dest_dir / f"{PREFIX}{stamp}-{safe_label}{SUFFIX}"
     partial = dest_dir / f".partial-{final.name}"
     _remove_quietly(partial, Path(f"{partial}-journal"))
@@ -122,9 +129,19 @@ def backup(source: Path, dest_dir: Path, label: str, keep: int, missing_ok: bool
         raise
 
     # Only now, with a verified new backup in place, is anything old removed.
+    # The newest backup whose name contains `protect` survives however old it
+    # is: a deploy names the version it backed up, and the last one taken from
+    # the last good version is the one a rollback may need — several failed
+    # attempts in a row must not rotate it out.
     backups = sorted(p for p in dest_dir.glob(f"{PREFIX}*{SUFFIX}") if p.is_file())
-    for old in backups[:-keep]:
-        _remove_quietly(old)
+    keep_set = set(backups[-keep:])
+    if protect:
+        guarded = [p for p in backups if protect in p.name]
+        if guarded:
+            keep_set.add(guarded[-1])
+    for old in backups:
+        if old not in keep_set:
+            _remove_quietly(old)
     print(
         f"backup ok: {final.name} (schema {facts['schema_version']},"
         f" {facts['activities']} activities)",
@@ -182,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--keep", type=int, default=5)
     b.add_argument("--missing-ok", action="store_true",
                    help="exit 0 and print 'none' when there is no database yet")
+    b.add_argument("--protect", default=None,
+                   help="never prune the newest backup whose name contains this")
 
     v = sub.add_parser("verify")
     v.add_argument("--path", type=Path, required=True)
@@ -194,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "backup":
-            made = backup(args.source, args.dest_dir, args.label, args.keep, args.missing_ok)
+            made = backup(args.source, args.dest_dir, args.label, args.keep, args.missing_ok,
+                          args.protect)
             # stdout carries exactly one token for the deploy script to read.
             print(made.name if made else "none")
         elif args.command == "verify":

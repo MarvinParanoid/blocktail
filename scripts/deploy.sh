@@ -17,10 +17,11 @@
 #     passed is exactly what ships;
 #   - a commit that tracks .env, wallets.yml or a database file.
 #
-# On the server, scripts/remote-deploy.sh (from the shipped release) builds an
-# image tagged with the commit, keeps the running one as blocktail:previous,
-# backs up SQLite, starts the new image and waits for /healthz. See
-# docs/operations.md for what to do when that fails.
+# On the server, scripts/remote-deploy.sh (from the shipped release) takes the
+# deploy lock, builds an image tagged with the commit (once per commit), backs
+# up SQLite, starts the new image and waits for /healthz, and records it as the
+# last good version only if it passes. See docs/operations.md for what to do
+# when that fails.
 #
 # Configuration stays on the server: .env and wallets.yml are never sent. A
 # deploy that reverts a key rotated on the server, or a wallet added through the
@@ -99,11 +100,12 @@ fi
 
 q() { printf '%q' "$1"; }
 RELEASES="$REMOTE/releases"
-say "shipping $SHA to $HOST:$RELEASES/$SHA"
-"$SSH" "$HOST" "set -e; mkdir -p $(q "$RELEASES"); rm -rf $(q "$RELEASES/$SHA.incoming");
-  mkdir $(q "$RELEASES/$SHA.incoming"); tar -xzf - -C $(q "$RELEASES/$SHA.incoming");
-  rm -rf $(q "$RELEASES/$SHA"); mv $(q "$RELEASES/$SHA.incoming") $(q "$RELEASES/$SHA")" \
-  < "$ARCHIVE"
+# A private directory per session: two deploys at once never unpack into the
+# same place. The server script moves it to releases/<sha> once it holds the
+# deploy lock, and removes it if the lock is taken.
+INCOMING="$RELEASES/.incoming-$SHA-$(date -u +%Y%m%dT%H%M%S)-$$"
+say "shipping $SHA to $HOST:$RELEASES"
+"$SSH" "$HOST" "set -e; mkdir -p $(q "$INCOMING"); tar -xzf - -C $(q "$INCOMING")" < "$ARCHIVE"
 
-"$SSH" "$HOST" "BLOCKTAIL_REMOTE=$(q "$REMOTE") bash $(q "$RELEASES/$SHA/scripts/remote-deploy.sh") deploy $(q "$SHA")"
+"$SSH" "$HOST" "BLOCKTAIL_REMOTE=$(q "$REMOTE") bash $(q "$INCOMING/scripts/remote-deploy.sh") deploy $(q "$SHA") $(q "$INCOMING")"
 say "deployed $SHA"
