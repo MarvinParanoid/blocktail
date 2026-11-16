@@ -4,13 +4,13 @@
    rendered as whole tokens. #}
 {#- The holdings sheet is where a holding is read exactly (exact_figures);
     the summary strip shows the compact form when the exact one is long. -#}
-{% from "_macros.html" import figure %}
+{% from "_macros.html" import figure, asset_badges %}
 {{ figure(asset.amount_text, none if exact_figures else asset.amount_compact,
           "holding__amount num", asset.raw_units) }}
 {%- if asset.raw_units %}<span class="kind" title="Decimals unknown: raw on-chain units, not valued">raw</span>{% endif %}
 {% if asset.excluded %}
   <span class="holding__value holding__value--excluded"
-        title="Its price quote is not credible, so it is left out of the total">excluded</span>
+        title="Its price quote is not credible, so it is not valued and is left out of the total">not valued</span>
 {% else %}
   {{ figure(asset.value_text or '', none if exact_figures else asset.value_compact, "holding__value num") }}
 {% endif %}

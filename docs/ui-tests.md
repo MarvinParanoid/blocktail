@@ -49,8 +49,9 @@ stand and the test fails if one was attempted.
 | Mobile holdings sheet | 390 |
 | "Load N more days": queued → running → completed, rows appear | 1440 |
 | Removing a wallet updates sidebar, feed and scope | 1440 |
-| axe-core matches the known baseline | 1440, 390 |
+| No axe-core violations | 1440, 390 (smoke); 1440, 768, 390, 320 × dark, light (`test_accessibility.py`) |
 | Main controls reachable with Tab | 1440 |
+| Keyboard and focus (`test_accessibility.py`, below) | 1440, 768, 390, 320 |
 | Connection status (`test_connection.py`, below) | 1440, 390 |
 | Phones and money (`test_mobile_financial.py`, below) | 1440, 1024, 768, 430, 390, 360, 320 |
 | No JavaScript or console errors, no request leaves the stand | every test |
@@ -91,6 +92,42 @@ on every phone; that unknown decimals read "raw" and carry no USD; that an
 excluded asset or a forged ticker shows no made-up value; and that a drawer
 left open across a resize to desktop and back leaves nothing broken.
 
+### Keyboard, focus and accessibility
+
+`test_accessibility.py` holds the page to the keyboard model below, and to
+zero axe-core violations.
+
+* **The feed is one Tab stop.** Each row's time is a real `<button
+  class="row__open">`, so Enter and Space open the inspector without
+  reimplementing them. Only the current row is in the Tab order (roving
+  tabindex): its button, its own links and its fold-out. The arrows,
+  PageUp/PageDown, Home and End choose the row; Tab walks that one row and
+  leaves the feed. Rows that arrive later — a refresh, a filter, a page
+  appended by scrolling — are brought into line by a `MutationObserver`, and a
+  swap that replaces the focused row puts focus back on the same activity.
+* **The inspector** gets focus on its heading when it opens and gives it back
+  to the row it was opened from when it closes. On a phone it is a modal
+  (`role="dialog"`, `aria-modal`, `aria-labelledby`): everything behind it
+  is `inert`, Tab is trapped inside, Escape closes it. On a desktop it is a
+  side panel, not a modal, and the page stays usable beside it.
+* **The scope sheet and the holdings/wallet dialog** follow the same modal
+  rules. The dialog is a native `<dialog>`; Chromium lets Tab leave a modal
+  dialog for the browser chrome, so its Tab is trapped too. Opening one drawer
+  while another is open, and resizing between phone and desktop with one
+  open, leave exactly one modal, or none.
+* **Exact amounts** are not behind hover: on a desktop "All holdings" opens
+  the same sheet a phone uses, where each figure is printed in full, as
+  selectable text, wrapping only between digit groups.
+* **Labels in words, not colour:** an asset whose quote the total refuses
+  reads "not valued", a ticker that imitates a known token from another
+  contract reads "unverified" — in the feed, the inspector and the holdings
+  sheet (the summary strip says "not valued" too). Neither claims fraud.
+* **A refused wallet form** (U-11) marks the field at fault
+  (`aria-invalid`, `aria-describedby` pointing at the message), moves focus to
+  it, and announces the message (`role="alert"`).
+* **Colour schemes:** the page follows `prefers-color-scheme`; both the dark
+  and the light palette meet WCAG AA contrast, and axe runs in both.
+
 ## Known defects
 
 These are open findings from [the audit](audit/product-audit.md). Each is a
@@ -100,20 +137,17 @@ so the marker is removed together with the defect.
 
 | Audit id | Test | What fails |
 | --- | --- | --- |
-| U-06 | `test_the_inspector_opens_from_the_keyboard[desktop-1440]` | feed rows do not take focus |
 | U-10 | `test_pasting_into_search_filters_the_feed[desktop-1440]` | an input with no keyup (a paste) does not search |
 
 Fixed and since removed from this list, by the strict markers failing as
 designed: U-03 (overflow at 390 and 320, and the inspector's close button
-pushed off screen by it) and U-02 (the empty holdings sheet), both in S5.
+pushed off screen by it) and U-02 (the empty holdings sheet), both in S5;
+U-06 (feed rows not reachable by keyboard), in S6.
 
-Accessibility (U-07) is a baseline rather than an xfail. `KNOWN_AXE` in
-`test_smoke.py` lists the axe-core rules reported today — `color-contrast`,
-`region` and `empty-table-header` on desktop; `color-contrast`, `region` and
-`select-name` on a phone. The comparison is exact: a new rule fails the run,
-and so does a rule that stopped being reported, so the list has to shrink as
-fixes land. The failure message lists every rule with its impact and node
-count.
+Accessibility (U-07) was a baseline of known axe-core rules until S6, which
+fixed them (`color-contrast`, `region`, `empty-table-header`, `select-name`)
+and removed the baseline: any axe violation now fails the run, and the
+failure message lists every rule with its impact and node count.
 
 `axe-core` 4.10.2 is vendored in `tests_ui/vendor/` (MPL-2.0, licence beside
 it), byte-identical to the npm package, so the check works offline.

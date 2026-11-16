@@ -22,9 +22,11 @@
 {% include "_summary.html" %}
 
 <main class="layout{{ ' one-wallet' if filters.account_id is not none }}">
-  <aside class="sidebar" id="sidebar">
+  {# A <section>, not an <aside>: on a phone it becomes a modal sheet, and
+     role="dialog" is not allowed on <aside>. #}
+  <section class="sidebar" id="sidebar" aria-label="Wallets">
     {% include "_wallets.html" %}
-  </aside>
+  </section>
 
   <section class="feed-panel">
     <form id="filters" class="filters"
@@ -108,7 +110,8 @@
             <th class="cell-value">Amount</th>
             <th class="cell-party">Counterparty</th>
             <th class="cell-tx">Transaction</th>
-            <th class="cell-fill"></th>
+            {# A spacer, not a column: no header to announce (U-07). #}
+            <td class="cell-fill" aria-hidden="true"></td>
           </tr>
         </thead>
         <tbody id="feed-body">
@@ -122,15 +125,18 @@
      docked to the bottom on a narrow one — the treatment the wallet list already
      uses. A dialog would have to be dismissed before the feed could be read, and
      the point of an inspector is to sit beside what it inspects. #}
-  <aside class="inspector" id="inspector" aria-label="Transaction">
+  {# A labelled panel beside the feed on a wide screen; on a phone, while it
+     is open, a modal dialog (role and aria-modal are set by the page script,
+     because they depend on the width). Inert while closed. #}
+  <section class="inspector" id="inspector" aria-label="Transaction" inert>
     <div id="inspector-body"></div>
-  </aside>
+  </section>
 </main>
 </div>
 
 {# The dialog lives outside the sidebar on purpose: the sidebar re-renders on a
    timer, which would wipe a half-typed form. #}
-<dialog id="wallet-dialog" class="sheet" aria-label="Wallet">
+<dialog id="wallet-dialog" class="sheet" aria-labelledby="sheet-title">
   <div id="wallet-dialog-body"></div>
 </dialog>
 

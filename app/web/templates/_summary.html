@@ -1,4 +1,4 @@
-<section id="summary" class="summary-panel{{ ' scope-is-panel' if scope_is_panel }}"
+<section id="summary" aria-label="Portfolio" class="summary-panel{{ ' scope-is-panel' if scope_is_panel }}"
          hx-get="/summary" hx-trigger="every 30s, refreshWallets from:body, wallet-changed from:body"
          hx-include="#wallet-value, #scope-value" hx-swap="outerHTML">
 
@@ -126,15 +126,17 @@
            rather than growing the header downwards. "More" is deliberately not
            "hidden": hidden is what the spam filter does, and one word for two
            different things is how a reader stops trusting either. #}
+        {# On a wide screen the same sheet is where a holding is read exactly —
+           a compact figure in the strip has its exact text there, without
+           relying on a tooltip. #}
         {% set overflow = portfolio.assets | length - 3 %}
-        {% if overflow > 0 or portfolio.hidden %}
-          <button type="button" class="holdings__more"
-                  hx-get="/holdings" hx-target="#wallet-dialog-body" hx-swap="innerHTML"
-                  hx-include="#wallet-value, #scope-value"
-                  hx-on::after-request="showWalletDialog()">
-            {{ portfolio.assets | length - 2 }} more assets
-          </button>
-        {% endif %}
+        <button type="button" class="holdings__more{{ ' has-more' if overflow > 0 or portfolio.hidden }}"
+                hx-get="/holdings" hx-target="#wallet-dialog-body" hx-swap="innerHTML"
+                hx-include="#wallet-value, #scope-value"
+                hx-on::after-request="showWalletDialog()">
+          <span class="when-wide">All holdings</span>
+          <span class="when-narrow">{{ portfolio.assets | length - 2 }} more assets</span>
+        </button>
 
         {# Price freshness is a footnote on the valuation, not a fourth metric. #}
         {% if portfolio.price_age_text %}

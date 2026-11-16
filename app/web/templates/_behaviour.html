@@ -75,52 +75,324 @@
   const NARROW = window.matchMedia('(max-width: 860px)');
   function isNarrow() { return NARROW.matches; }
 
+  // --- modals ----------------------------------------------------------
+  //
+  // On a phone the scope sheet and the transaction sheet are modal: focus goes
+  // in, Tab cannot leave, everything behind is inert (unreachable by Tab and
+  // hidden from assistive technology), Escape closes, and focus goes back to
+  // what opened it. On a wide screen the sidebar and the inspector are panels
+  // beside the feed and none of this applies. The wallet/holdings dialog is a
+  // native <dialog> opened with showModal(), which does all of it itself.
+  const html = document.documentElement;
+  const scrim = document.querySelector('.scrim');
+  const inspector = document.getElementById('inspector');
+  const sidebar = document.getElementById('sidebar');
+  const modal = { el: null, inerted: [] };
+
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select,'
+    + ' textarea, [tabindex]:not([tabindex="-1"])';
+  function focusables(root) {
+    return [...root.querySelectorAll(FOCUSABLE)]
+      .filter((e) => e.offsetParent !== null && !e.closest('[inert]'));
+  }
+
+  function makeModal(el, label) {
+    releaseModal();
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    if (label) el.setAttribute('aria-label', label);
+    // Everything that is not on the way from the modal up to <body> goes
+    // inert. The scrim stays live (a tap on it closes), and so does the
+    // native dialog, which manages itself.
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      for (const sibling of node.parentElement.children) {
+        if (sibling === node || sibling.inert || sibling === scrim
+            || sibling.tagName === 'SCRIPT' || sibling.tagName === 'DIALOG') continue;
+        sibling.inert = true;
+        modal.inerted.push(sibling);
+      }
+    }
+    modal.el = el;
+  }
+
+  function releaseModal() {
+    modal.inerted.forEach((e) => { e.inert = false; });
+    modal.inerted = [];
+    if (modal.el) {
+      modal.el.removeAttribute('role');
+      modal.el.removeAttribute('aria-modal');
+    }
+    modal.el = null;
+  }
+
+  // Tab and Shift+Tab wrap inside an open modal.
+  // The native dialog makes the page behind it inert, but Chromium still lets
+  // Tab leave it for the browser's own UI, so it is trapped here as well.
+  document.addEventListener('keydown', (evt) => {
+    const dialog = document.getElementById('wallet-dialog');
+    const box = dialog && dialog.open ? dialog : modal.el;
+    if (evt.key !== 'Tab' || !box) return;
+    const items = focusables(box);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    const inside = box.contains(document.activeElement);
+    if (evt.shiftKey && (document.activeElement === first || !inside)) {
+      evt.preventDefault(); last.focus();
+    } else if (!evt.shiftKey && (document.activeElement === last || !inside)) {
+      evt.preventDefault(); first.focus();
+    }
+  });
+
+  // --- scope sheet (a phone's sidebar) -----------------------------------
+
   function openScopeSheet() {
-    document.documentElement.classList.add('scope-open');
-    document.querySelector('.scrim').hidden = false;
+    html.classList.add('scope-open');
+    scrim.hidden = false;
+    applyLayout();
+    const target = sidebar.querySelector('.is-selected .wallet__hit, .wallets__group.is-selected')
+      || focusables(sidebar)[0];
+    if (target) target.focus();
   }
   function closeScopeSheet() {
-    document.documentElement.classList.remove('scope-open');
-    document.querySelector('.scrim').hidden = true;
+    const wasOpen = html.classList.contains('scope-open');
+    html.classList.remove('scope-open');
+    if (!html.classList.contains('inspector-open')) scrim.hidden = true;
+    applyLayout();
+    // The opener lives in the status bar, which is re-rendered every poll:
+    // find it again rather than keeping the element.
+    if (wasOpen && isNarrow()) {
+      const opener = document.querySelector('.topline__scope');
+      if (opener) opener.focus();
+    }
   }
 
   // --- transaction inspector ---------------------------------------------
 
   // Docked beside the feed on a wide screen and docked to the bottom on a
-  // narrow one — one component either way. It is deliberately not a modal:
-  // the point of an inspector is that you can keep reading what it inspects.
+  // narrow one — one component either way. On a wide screen it is a panel,
+  // not a modal: the point of an inspector is that you can keep reading what
+  // it inspects. On a phone it covers the feed, so it is a modal there.
+  let inspectorOpener = null;   // the activity id whose row opened it
+
   function openInspector(row) {
-    document.documentElement.classList.add('inspector-open');
+    html.classList.add('inspector-open');
     document.querySelectorAll('.row.is-open').forEach((r) => r.classList.remove('is-open'));
-    if (row) row.classList.add('is-open');
-    if (isNarrow()) document.querySelector('.scrim').hidden = false;
+    if (row) {
+      row.classList.add('is-open');
+      inspectorOpener = row.dataset.activity || null;
+    }
+    if (isNarrow()) scrim.hidden = false;
+    inspector.inert = false;
+    if (document.getElementById('insp-title')) {
+      inspector.setAttribute('aria-labelledby', 'insp-title');
+    }
+    applyLayout();
+    const title = document.getElementById('insp-title');
+    if (title) title.focus();
   }
 
   function closeInspector() {
-    document.documentElement.classList.remove('inspector-open');
+    const wasOpen = html.classList.contains('inspector-open');
+    html.classList.remove('inspector-open');
     document.querySelectorAll('.row.is-open').forEach((r) => r.classList.remove('is-open'));
-    if (!document.documentElement.classList.contains('scope-open')) {
-      document.querySelector('.scrim').hidden = true;
-    }
+    if (!html.classList.contains('scope-open')) scrim.hidden = true;
+    inspector.inert = true;
+    inspector.removeAttribute('aria-labelledby');
+    applyLayout();
+    if (wasOpen && inspectorOpener) focusRow(inspectorOpener);
   }
 
   function closeSheets() { closeScopeSheet(); closeInspector(); }
 
+  // Which of the two is a modal depends on the width, and the width can
+  // change with either open (a rotated phone, a resized window).
+  function applyLayout() {
+    if (isNarrow() && html.classList.contains('inspector-open')) {
+      makeModal(inspector);
+    } else if (isNarrow() && html.classList.contains('scope-open')) {
+      makeModal(sidebar, 'Choose what the feed shows');
+    } else {
+      releaseModal();
+      sidebar.removeAttribute('aria-label');
+    }
+    // On a phone the sidebar is an off-screen sheet while closed: inert, so
+    // Tab does not wander through links nobody can see.
+    sidebar.inert = isNarrow() && !html.classList.contains('scope-open');
+    scrim.hidden = !(isNarrow() && (html.classList.contains('inspector-open')
+                                    || html.classList.contains('scope-open')));
+  }
+  NARROW.addEventListener('change', applyLayout);
+  applyLayout();
+
   document.addEventListener('keydown', (evt) => {
     if (evt.key !== 'Escape') return;
+    if (walletDialog.open) return;   // the dialog handles its own Escape
     // Innermost first: Escape should not dismiss everything at once.
-    if (document.documentElement.classList.contains('inspector-open')) closeInspector();
+    if (html.classList.contains('inspector-open')) closeInspector();
     else closeScopeSheet();
+  });
+
+  // --- the feed, by keyboard ---------------------------------------------
+  //
+  // One Tab stop for the whole feed, not one per row: with hundreds of rows a
+  // stop each would make everything after the feed unreachable. Each row has
+  // a button; exactly one of them is tabbable (tabindex 0, the rest -1), and
+  // the arrows, Home and End move it. Enter and Space press it — a native
+  // button, so nothing reimplements them.
+  const feedBody = document.getElementById('feed-body');
+
+  function rowButtons() {
+    return [...feedBody.querySelectorAll('tr[data-activity] .row__open')]
+      .filter((b) => b.offsetParent !== null);
+  }
+  // Only the current row is in the Tab order — its button and its own links
+  // (the counterparty, the explorer, the hash, the token), and the fold-out
+  // under it. Every other row's controls are tabindex -1. Tab walks the one
+  // row and leaves the feed; the arrows choose which row that is.
+  const ROW_CONTROLS = 'tr[data-activity] a[href], tr[data-activity] button,'
+    + ' tr.row--more-of button';
+  function setStop(button) {
+    feedBody.querySelectorAll(ROW_CONTROLS).forEach((el) => { el.tabIndex = -1; });
+    const row = button && button.closest('tr[data-activity]');
+    if (!row) return;
+    row.querySelectorAll('a[href], button').forEach((el) => { el.tabIndex = 0; });
+    const fold = row.nextElementSibling;
+    if (fold && fold.classList.contains('row--more-of')) {
+      fold.querySelectorAll('button').forEach((el) => { el.tabIndex = 0; });
+    }
+  }
+  function ensureStop() {
+    const current = feedBody.querySelector('.row__open[tabindex="0"]');
+    // New rows arrive with their links tabbable; the stop is re-applied so
+    // they fall in line.
+    setStop(current && current.offsetParent !== null ? current : rowButtons()[0] || null);
+  }
+  function focusRow(activityId) {
+    const button = feedBody.querySelector(
+      'tr[data-activity="' + activityId + '"] .row__open');
+    const target = button && button.offsetParent !== null ? button : rowButtons()[0];
+    if (target) { setStop(target); target.focus(); }
+  }
+
+  feedBody.addEventListener('keydown', (evt) => {
+    const current = evt.target.closest && evt.target.closest('.row__open');
+    if (!current) return;
+    const buttons = rowButtons();
+    const at = buttons.indexOf(current);
+    const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10 }[evt.key];
+    let next = null;
+    if (step) next = buttons[Math.max(0, Math.min(buttons.length - 1, at + step))];
+    else if (evt.key === 'Home') next = buttons[0];
+    else if (evt.key === 'End') next = buttons[buttons.length - 1];
+    if (!next) return;
+    evt.preventDefault();
+    setStop(next);
+    next.focus();
+  });
+  feedBody.addEventListener('focusin', (evt) => {
+    const button = evt.target.closest && evt.target.closest('.row__open');
+    if (button) setStop(button);
+  });
+
+  // A swap replaces the rows. The row that had focus (or the tab stop) is the
+  // same activity afterwards, and gets it back — a refresh every fifteen
+  // seconds must not throw a keyboard user out of the feed.
+  let feedFocus = null;
+  document.body.addEventListener('htmx:beforeSwap', (evt) => {
+    const target = evt.detail.target;
+    if (!target || !(target === feedBody || feedBody.contains(target))) return;
+    const focused = document.activeElement && document.activeElement.closest
+      && document.activeElement.closest('#feed-body tr[data-activity]');
+    const stop = feedBody.querySelector('.row__open[tabindex="0"]');
+    feedFocus = {
+      row: focused ? focused.dataset.activity
+        : (stop ? stop.closest('tr[data-activity]').dataset.activity : null),
+      hadFocus: !!focused,
+    };
+  });
+  document.body.addEventListener('htmx:afterSettle', () => {
+    if (feedFocus) {
+      const { row, hadFocus } = feedFocus;
+      feedFocus = null;
+      // Only when the swap took the focused element away. A page appended
+      // below (infinite scroll) replaces nothing the reader is on, and must
+      // not pull focus back to a row they have since Tabbed past.
+      const focused = document.activeElement;
+      const lost = !focused || focused === document.body || !focused.isConnected;
+      if (lost && hadFocus) {
+        focusRow(row);
+      } else if (!feedBody.contains(focused)) {
+        const button = row && feedBody.querySelector(
+          'tr[data-activity="' + row + '"] .row__open');
+        if (button && button.offsetParent !== null) setStop(button);
+      }
+    }
+  });
+  // New rows arrive with their links tabbable — a refresh, a filter, a page
+  // appended by scrolling. Whenever rows are added, however they came, the
+  // stop is re-applied to the row the reader is on (or the remembered one)
+  // so the new rows fall in line. setStop only changes attributes, so this
+  // does not observe itself.
+  new MutationObserver((records) => {
+    if (!records.some((r) => r.addedNodes.length)) return;
+    const here = document.activeElement;
+    const onRow = feedBody.contains(here) && here.closest('tr[data-activity]');
+    if (onRow) setStop(onRow.querySelector('.row__open'));
+    else ensureStop();
+  }).observe(feedBody, { childList: true, subtree: true });
+  ensureStop();
+
+  // The status bar is replaced every poll, and a keyboard user may be on its
+  // scope button: put focus back on the same control in the new bar.
+  document.body.addEventListener('htmx:beforeSwap', (evt) => {
+    const target = evt.detail.target;
+    if (!target || target.id !== 'topline') return;
+    const focused = document.activeElement;
+    if (focused && target.contains(focused) && focused.classList.length) {
+      const cls = focused.classList[0];
+      setTimeout(() => {
+        const again = document.querySelector('#topline .' + cls);
+        if (again) again.focus();
+      }, 0);
+    }
   });
 
   // --- wallet dialog -----------------------------------------------------
   const walletDialog = document.getElementById('wallet-dialog');
 
   // The dialog is a container; what goes in it is fetched by whoever opens it.
+  // What opened it, by class: the summary and the sidebar it lives in are
+  // re-rendered on a timer, so the element itself may be gone by close.
+  let dialogOpener = null;
+
   function showWalletDialog() {
     document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));
-    if (!walletDialog.open) walletDialog.showModal();
+    const focused = document.activeElement;
+    if (!walletDialog.open) {
+      dialogOpener = focused && focused !== document.body && focused.classList.length
+        ? '.' + focused.classList[0] : null;
+      walletDialog.showModal();
+      const close = walletDialog.querySelector('.insp__close');
+      const first = walletDialog.querySelector('[autofocus]')
+        || walletDialog.querySelector('input, select, textarea') || close;
+      if (first) first.focus();
+    }
   }
+
+  // A refused form comes back with the field at fault marked [autofocus]
+  // (U-11). htmx does not focus it in a swapped fragment, so this does —
+  // otherwise focus falls to <body> and the keyboard user is lost.
+  document.body.addEventListener('htmx:afterSwap', (evt) => {
+    if (!walletDialog.open || !walletDialog.contains(evt.detail.target)) return;
+    const wanted = walletDialog.querySelector('[aria-invalid="true"], [autofocus]');
+    if (wanted) wanted.focus();
+  });
+
+  walletDialog.addEventListener('close', () => {
+    const opener = dialogOpener && document.querySelector(dialogOpener);
+    dialogOpener = null;
+    if (opener && opener.offsetParent !== null) opener.focus();
+  });
 
   function openWalletDialog(id) {
     // The form is rendered server-side so the dialog itself holds no state.
@@ -182,7 +454,8 @@
   document.body.addEventListener('htmx:beforeRequest', (evt) => {
     const trigger = evt.detail.requestConfig && evt.detail.requestConfig.triggeringEvent;
     if (evt.detail.elt && evt.detail.elt.id === 'wallets'
-        && document.querySelector('.wallet__menu[open]')
+        && (document.querySelector('.wallet__menu[open]')
+            || document.documentElement.classList.contains('scope-open'))
         && (!trigger || trigger.type !== 'wallet-changed')) {
       evt.preventDefault();
     }

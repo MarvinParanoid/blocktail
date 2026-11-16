@@ -70,7 +70,7 @@ def test_the_holdings_sheet_lists_the_holdings(session, viewport):
     text = page.locator("#wallet-dialog").inner_text()
     assert "USDC" in text and "LINK" in text, session.where("named holdings")
     nmt = page.locator("#wallet-dialog .holding", has_text="NMT")
-    assert "excluded" in nmt.inner_text(), session.where("NMT says excluded, not a quote")
+    assert "not valued" in nmt.inner_text(), session.where("NMT says not valued, not a quote")
 
     sheet = page.locator("#wallet-dialog")
     if page.evaluate("(d) => d.scrollHeight > d.clientHeight", sheet.element_handle()):
@@ -89,7 +89,7 @@ def test_choosing_a_holding_filters_the_feed(session, viewport):
     page.locator(".holdings__more").first.click()
     page.wait_for_selector("#wallet-dialog[open]", timeout=5000)
     with page.expect_response(lambda r: "/activity?asset=" in r.url):
-        page.locator("#wallet-dialog .holding", has_text="USDC").first.click()
+        page.locator("#wallet-dialog a.holding__sym", has_text="USDC").first.click()
     page.wait_for_function("() => !document.querySelector('#wallet-dialog').open")
     page.wait_for_timeout(200)
     symbols = {s.strip() for s in page.locator(f"{ROWS} .cell-value .sym").all_inner_texts()}

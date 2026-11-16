@@ -1177,8 +1177,11 @@ def test_a_row_is_clickable_without_swallowing_its_links(client):
     """The row opens the transaction; the links inside it keep their own jobs.
     One trigger filter does that, rather than a stopPropagation on each link."""
     body = client.get("/activity").text
-    assert "click[!event.target.closest('a,button')]" in body
+    # The row's own open button (its time, the keyboard's way in) is the one
+    # button that does not opt out.
+    assert "click[!event.target.closest('a,button:not(.row__open)')]" in body
     assert 'hx-get="/tx/' in body
+    assert 'class="row__open"' in body
 
 
 def test_the_narrow_scope_selector_names_what_the_feed_shows(client):
@@ -2096,7 +2099,7 @@ def test_more_is_not_the_same_word_as_hidden(client):
     trusting either."""
     body = client.get("/summary").text
     if "holdings__more" in body:
-        more = re.search(r'class="holdings__more".*?</button>', body, re.S).group(0)
+        more = re.search(r'class="holdings__more[^"]*".*?</button>', body, re.S).group(0)
         assert "hidden" not in more
         assert "more" in more
 
@@ -2104,8 +2107,11 @@ def test_more_is_not_the_same_word_as_hidden(client):
 def test_everything_held_is_a_tap_away(client):
     """Capping the panel at three is only honest if the rest are reachable."""
     body = client.get("/holdings").text
-    shown = re.findall(r'class="holding__sym">([^<]+)<', body)
-    panel = re.findall(r'class="holding__sym">([^<]+)<', client.get("/summary").text)
+    # In the sheet each symbol is a link (it filters the feed); in the panel
+    # it is text. Either way the symbol is the element's text.
+    sym = r'class="holding__sym"[^>]*>([^<]+)<'
+    shown = re.findall(sym, body)
+    panel = re.findall(sym, client.get("/summary").text)
 
     assert len(shown) >= len(panel)
     assert "Assets" in body
@@ -2246,3 +2252,44 @@ def test_the_json_api_keeps_exact_amounts(client, provider):
     assert row["amount"] == "1,000,000,000,000,000,000,000,000,000,000"
     page = client.get("/activity", params={"dust": "show"}).text
     assert "1×10³⁰" in page and row["amount"] in page, "compact, with the exact text beside it"
+
+
+# U-11: a refused wallet form says which field is wrong, to a screen reader
+# too — the field is marked invalid, points at the message, and gets focus.
+
+
+def _field(body: str, name: str) -> str:
+    return re.search(rf'<(?:input|select)[^>]*name="{name}"[^>]*>', body, re.S).group(0)
+
+
+@pytest.mark.parametrize("data, field", [
+    ({"name": "", "address": STRANGER, "chain": "ethereum"}, "name"),
+    ({"name": "Whale", "address": "0x1234", "chain": "ethereum"}, "address"),
+    ({"name": "Whale", "address": STRANGER, "chain": "nowhere"}, "chain"),
+])
+def test_a_refused_wallet_form_marks_the_field_at_fault(client, data, field):
+    response = client.post("/wallets", data=data, headers={"sec-fetch-site": "same-origin"})
+    assert response.status_code == 422
+    body = response.text
+    assert re.search(r'<p class="sheet__error" id="wallet-error" role="alert">', body)
+    wrong = _field(body, field)
+    assert 'aria-invalid="true"' in wrong and 'aria-describedby="wallet-error"' in wrong
+    assert "autofocus" in wrong, "focus lands on the field to fix"
+    for other in {"name", "address", "chain"} - {field}:
+        assert "aria-invalid" not in _field(body, other)
+        assert "autofocus" not in _field(body, other)
+
+
+def test_a_duplicate_wallet_points_at_the_address(client):
+    data = {"name": "Whale", "address": STRANGER, "chain": "ethereum"}
+    client.post("/wallets", data=data, headers={"sec-fetch-site": "same-origin"})
+    again = client.post("/wallets", data={**data, "name": "Whale 2"},
+                        headers={"sec-fetch-site": "same-origin"})
+    assert again.status_code == 422
+    assert 'aria-invalid="true"' in _field(again.text, "address")
+
+
+def test_a_fresh_wallet_form_marks_nothing_invalid(client):
+    body = client.get("/wallets/form").text
+    assert "aria-invalid" not in body
+    assert "autofocus" in _field(body, "name")

@@ -1,4 +1,4 @@
-{% from "_macros.html" import figure %}
+{% from "_macros.html" import figure, asset_badges %}
 {% set ns = namespace(day=previous_day) %}
 {% set oldest_cursor = (activities[-1].timestamp ~ '_' ~ activities[-1].id) if activities else '' %}
 
@@ -21,9 +21,14 @@
   <tr class="row row--{{ activity.direction }}{{ ' row--folded' if not is_lead }}"
       data-activity="{{ activity.id }}" data-tx="{{ activity.tx_hash }}"
       hx-get="/tx/{{ activity.id }}" hx-target="#inspector-body" hx-swap="innerHTML"
-      hx-trigger="click[!event.target.closest('a,button')]"
+      hx-trigger="click[!event.target.closest('a,button:not(.row__open)')]"
       hx-on::after-request="openInspector(this)">
-    <td class="cell-time"><span class="time" title="{{ activity.iso }}">{{ activity.time_text }}</span></td>
+    {# The row's one control for the keyboard: a real button, so Enter and Space
+       work as they do anywhere. Only one row's button is in the Tab order at a
+       time (see the feed keyboard in _behaviour.html); the arrows move it. #}
+    <td class="cell-time"><button type="button" class="row__open" tabindex="-1"
+        ><span class="time" title="{{ activity.iso }}">{{ activity.time_text }}</span
+        ><span class="sr-only"> — open transaction</span></button></td>
 
     {# An own transfer has no counterparty, so it spends the direction column on
        naming both sides instead. #}
@@ -44,6 +49,7 @@
 
     <td class="cell-value">
       {{ figure(activity.amount_text, activity.amount_compact, "amount", activity.raw_units) }}{% if activity.asset_url %}<a class="sym" href="{{ activity.asset_url }}" target="_blank" rel="noopener noreferrer">{{ activity.symbol }}</a>{% else %}<span class="sym">{{ activity.symbol }}</span>{% endif -%}
+      {{- asset_badges(activity) -}}
       {%- if activity.raw_units %}<span class="kind" title="Decimals unknown: raw on-chain units, not valued">raw</span>{% endif %}
       {%- if activity.kind_badge %}<span class="kind" title="Internal transfer — value moved by contract execution">{{ activity.kind_badge }}</span>{% endif %}
       {%- if activity.value_text %}{{ figure(activity.value_text, activity.value_compact, "fiat") }}{% endif %}
