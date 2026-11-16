@@ -221,6 +221,8 @@ def test_ci_needs_no_secret_and_never_deploys():
             assert word not in commands, (name, word)
         triggers = WORKFLOWS[name].get(True) or WORKFLOWS[name].get("on")   # yaml 1.1: on: -> True
         assert set(triggers) <= {"push", "pull_request", "workflow_dispatch"}, triggers
+        assert set(triggers["push"]["branches"]) <= {"main", "master", "rc/**"}, \
+            "pushes run checks on these branches only"
 
 
 def test_ci_runs_the_checks_this_project_relies_on():

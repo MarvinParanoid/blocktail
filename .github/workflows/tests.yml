@@ -4,7 +4,9 @@ name: tests
 # release goes out by scripts/deploy.sh, run by a person (docs/operations.md).
 on:
   push:
-    branches: [main, master]
+    # rc/*: a release candidate is checked by the same jobs before it is
+    # merged, without opening a pull request.
+    branches: [main, master, "rc/**"]
   pull_request:
 
 # Read the code, nothing else; no job asks for more.
