@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import DESKTOP, MOBILE, SMALL, TABLET, run_axe, viewports
+from conftest import DESKTOP, MOBILE, SCRIPT, SMALL, TABLET, run_axe, viewports
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from stand import REMOVABLE, SWAP_SEED
@@ -263,9 +263,9 @@ def test_removing_a_wallet_updates_the_page(fresh_session, viewport):
     page = session.open("/")
     response = page.request.post(stand.url + "/wallets", form={
         "name": "Removable", "address": REMOVABLE, "chain": "ethereum", "owned": "on",
-    })
+    }, headers=SCRIPT)
     assert response.ok, session.where("adding a wallet")
-    page.request.post(stand.url + "/__stand__/sync")
+    page.request.post(stand.url + "/__stand__/sync", headers=SCRIPT)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if stand.db.get_sync_status("ethereum").activity_count > 100:

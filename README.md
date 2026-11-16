@@ -220,6 +220,7 @@ was already indexed; removing one keeps its history and simply stops showing it.
 | `BACKFILL_DAYS` | `90` | How far back the feed reaches. |
 | `REORG_DEPTH` | `64` | Blocks re-scanned each cycle to correct reorgs. |
 | `AUTH_USER` / `AUTH_PASSWORD` | *(unset)* | Require HTTP basic auth when both are set. |
+| `ALLOWED_HOSTS` | *(any)* | Comma-separated names this instance is served as; any other Host gets 400. Loopback is always allowed. |
 | `MAX_TOKEN_BALANCES` | `10` | Token balances shown per wallet. |
 | `MAX_TOKEN_LOOKUPS` | `200` | Cap on token metadata lookups per wallet per sync. |
 | `DUST_BELOW_USD_CENTS` | `100` | A holding under this must earn its place another way. |
@@ -350,6 +351,12 @@ watch.example.com {
 
 Over Tailscale, skip the proxy and reach the VPS's tailnet address directly.
 
+The app sets its own security headers and reads no `X-Forwarded-*` header, so
+the proxy needs nothing beyond `reverse_proxy`. Whether it keeps the Host
+header (Caddy does; nginx needs `proxy_set_header Host $host`) matters only
+for `ALLOWED_HOSTS`. Add `Strict-Transport-Security` in the proxy once its
+HTTPS is in place.
+
 ### One worker
 
 The indexer runs inside the web process. Do not add `--workers` or set
@@ -421,9 +428,18 @@ serving correctly. The degraded state is in the response body, in
 - The only writes the web layer accepts are to the watch list: adding an address
   to monitor and removing one that was added there. Nothing else is mutable, and
   nothing touches the chain.
-- Those two routes check `Sec-Fetch-Site`/`Origin` so another site cannot post
-  to them through your browser. That is not a substitute for the access control
-  in front of the app — it is the layer under it.
+- Every write is taken from this page only: `Sec-Fetch-Site: same-origin`, or —
+  with no fetch metadata — `HX-Request: true`, which another site cannot make a
+  browser send. Another site cannot embed or fetch any page either. That is not
+  a substitute for the access control in front of the app — it is the layer
+  under it. A script that writes sends `-H 'HX-Request: true'`.
+- Every answer carries a strict Content-Security-Policy (script and style from
+  this origin only, no inline, no eval), `frame-ancestors 'none'`, `nosniff`,
+  `Referrer-Policy: same-origin`, and — except static files — `no-store`.
+  HSTS is left to the proxy that terminates TLS.
+- An instance without auth should set `ALLOWED_HOSTS`: it is what stops a
+  DNS-rebinding site from reading it.
+- Details, and the whole HTTP surface: [docs/security.md](docs/security.md).
 
 ---
 

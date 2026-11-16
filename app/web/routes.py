@@ -91,20 +91,6 @@ def _checked(value: str | None) -> bool:
     return (value or "").lower() in {"on", "true", "1", "yes"}
 
 
-def _same_origin(request: Request) -> bool:
-    """Reject a state-changing request that another site made on the user's
-    behalf. `Sec-Fetch-Site` is sent by every current browser; the Origin header
-    is the fallback for anything that is not."""
-    site = request.headers.get("sec-fetch-site")
-    if site is not None:
-        return site in {"same-origin", "same-site", "none"}
-    origin = request.headers.get("origin")
-    if origin is None:
-        return True  # curl and friends: nothing to forge a session with anyway
-    host = request.headers.get("host", "")
-    return origin.split("//")[-1] == host
-
-
 def _parse_int(raw: str | None) -> int | None:
     if raw is None or raw == "":
         return None
@@ -597,9 +583,6 @@ async def request_older_history(
     uncovered. Closing the page does not stop the work.
     """
     ctx = request.app.state.ctx
-    if not _same_origin(request):
-        return HTMLResponse("", status_code=403)
-
     state = ctx.db.request_history(ctx.chain.chain_id, ctx.settings.backfill_blocks)
     log.info(
         "older history %s: reaching for block %s", state.history_status, state.history_target
@@ -741,16 +724,11 @@ def add_wallet(
 ):
     """Add an address to watch.
 
-    The app has no login by design, so this is protected the way the rest of it
-    is: by whatever fronts the deployment. What it does check is that the request
-    came from this page rather than being cross-posted from somewhere else.
+    Like every write, it is taken only from this page: another site's request
+    is refused before it gets here (app/security.py), and access control is
+    basic auth or whatever fronts the deployment.
     """
     ctx = request.app.state.ctx
-    if not _same_origin(request):
-        return _form_response(
-            request, ctx, error="Rejected a cross-site request.", status=403
-        )
-
     name = (name or "").strip()[:60]
     is_owned = _checked(owned)
     form = {"name": name, "address": (address or "").strip(), "owned": is_owned, "chain": chain}
@@ -792,9 +770,6 @@ def edit_wallet(
 ):
     """Rename an account, or move it between "mine" and "watching"."""
     ctx = request.app.state.ctx
-    if not _same_origin(request):
-        return _form_response(request, ctx, error="Rejected a cross-site request.", status=403)
-
     account = next((a for a in ctx.db.list_accounts() if a.id == account_id), None)
     if account is None:
         return _form_response(request, ctx, error="No such wallet.", status=404)
@@ -834,9 +809,6 @@ def remove_wallet(request: Request, account_id: int):
     resumes indexing instead of replaying its whole history.
     """
     ctx = request.app.state.ctx
-    if not _same_origin(request):
-        return _form_response(request, ctx, error="Rejected a cross-site request.", status=403)
-
     removed = ctx.db.remove_account(account_id)
     if not removed:
         return _form_response(

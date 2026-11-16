@@ -76,6 +76,10 @@ class Settings:
     log_level: str
     auth_user: str
     auth_password: str = field(repr=False)
+    # The names this instance is served as. Empty: any Host is served — none
+    # is ever written back into a page or a redirect, but only a list stops a
+    # DNS-rebinding site from reading an instance that has no auth.
+    allowed_hosts: tuple[str, ...] = ()
 
     @property
     def auth_enabled(self) -> bool:
@@ -158,6 +162,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         prices_base_url=env.get("ALCHEMY_PRICES_URL", "https://api.g.alchemy.com/prices/v1").strip(),
         auth_user=env.get("AUTH_USER", "").strip(),
         auth_password=env.get("AUTH_PASSWORD", ""),
+        allowed_hosts=tuple(
+            h.strip().lower() for h in env.get("ALLOWED_HOSTS", "").split(",") if h.strip()
+        ),
         host=env.get("HOST", "0.0.0.0"),
         port=_env_int(env, "PORT", 8000, minimum=1),
         log_level=env.get("LOG_LEVEL", "INFO").upper(),
