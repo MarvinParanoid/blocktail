@@ -238,7 +238,10 @@ def _load_page(ctx, filters: Filters) -> tuple[list, str | None]:
     rows = rows[:PAGE_SIZE]
     prices = ctx.db.prices_by_asset()
     excluded = _excluded_assets(ctx)
-    activities = [build_activity(row, ctx.chain, scope, prices, excluded) for row in rows]
+    lookalikes = _relevance(ctx).impostor_asset_ids
+    activities = [
+        build_activity(row, ctx.chain, scope, prices, excluded, lookalikes) for row in rows
+    ]
     # The cursor comes from the query's order, not the display order: grouping
     # moves rows within a transaction, and paging from a moved row would skip
     # or repeat whatever sat between.
@@ -504,6 +507,7 @@ async def transaction_inspector(request: Request, activity_id: int):
                 cost=await _transaction_cost(ctx, row["tx_hash"]),
                 native_price=_native_price(ctx, prices),
                 excluded=_excluded_assets(ctx),
+                lookalikes=_relevance(ctx).impostor_asset_ids,
             )
         },
     )
@@ -641,7 +645,10 @@ def wallets_fragment(
     )
 
 
-def _form_response(request, ctx, *, account=None, form=None, error=None, status=200):
+def _form_response(request, ctx, *, account=None, form=None, error=None, status=200,
+                   field=None):
+    """``field`` names the input the error is about ("name", "address",
+    "chain"): it is marked invalid, tied to the message and given focus."""
     return templates.TemplateResponse(
         request,
         "_wallet_form.html",
@@ -649,6 +656,7 @@ def _form_response(request, ctx, *, account=None, form=None, error=None, status=
             "account": account,
             "form": form or {},
             "error": error,
+            "error_field": field if error else None,
             "chains": supported_chains(),
             "chain": ctx.chain,
         },
@@ -703,18 +711,25 @@ def add_wallet(
     form = {"name": name, "address": (address or "").strip(), "owned": is_owned, "chain": chain}
 
     if not name:
-        return _form_response(request, ctx, form=form, error="Give the wallet a name.", status=422)
+        return _form_response(request, ctx, form=form, error="Give the wallet a name.",
+                              status=422, field="name")
     try:
         normalized = get_chain(chain).normalize_address(address or "")
-    except (UnknownChainError, ValueError) as exc:
-        return _form_response(request, ctx, form=form, error=str(exc), status=422)
+    except UnknownChainError as exc:
+        return _form_response(request, ctx, form=form, error=str(exc), status=422,
+                              field="chain")
+    except ValueError as exc:
+        return _form_response(request, ctx, form=form, error=str(exc), status=422,
+                              field="address")
 
     try:
         added = ctx.db.add_account(
             chain_id=chain, address=normalized, name=name, is_owned=is_owned
         )
     except ValueError as exc:
-        return _form_response(request, ctx, form=form, error=str(exc), status=422)
+        # The one thing add_account refuses is an address already watched.
+        return _form_response(request, ctx, form=form, error=str(exc), status=422,
+                              field="address")
 
     log.info("added account %s (%s) via the UI", added.name, added.address)
     return _form_response(request, ctx)
@@ -744,7 +759,7 @@ def edit_wallet(
         if not cleaned:
             return _form_response(
                 request, ctx, account=account, form={"name": name},
-                error="Give the wallet a name.", status=422,
+                error="Give the wallet a name.", status=422, field="name",
             )
         if ctx.db.rename_account(account_id, cleaned) is None:
             return _form_response(

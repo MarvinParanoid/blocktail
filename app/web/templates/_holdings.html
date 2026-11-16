@@ -1,20 +1,26 @@
+{% from "_macros.html" import asset_badges %}
 {% set exact_figures = true %}
 <div class="detail">
   <div class="sheet__head">
-    <h2 class="sheet__title">Assets</h2>
+    <h2 class="sheet__title" id="sheet-title">Assets</h2>
     <button type="button" class="insp__close" onclick="closeWalletDialog()" aria-label="Close">&times;</button>
   </div>
 
   <ul class="holdings holdings--all">
     {% for asset in portfolio.assets %}
       <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--excluded' if asset.excluded }}{{ ' holding--muted' if asset.hidden }}">
-        <a class="holding__hit" href="?asset={{ asset.asset_id }}"
-           hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
-           hx-include="#wallet-value, #scope-value"
-           hx-on:click="filterByAsset('{{ asset.asset_id }}'); closeWalletDialog()">
-          <span class="holding__sym">{{ asset.symbol }}</span>
+        {# Here the ticker is the link and the figures are plain text: this is
+           where a holding is read exactly, and text inside a link cannot be
+           selected and copied. #}
+        <div class="holding__hit">
+          <a class="holding__sym" href="?asset={{ asset.asset_id }}"
+             hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
+             hx-include="#wallet-value, #scope-value"
+             hx-on:click="filterByAsset('{{ asset.asset_id }}'); closeWalletDialog()"
+             title="Show only {{ asset.symbol }} in the feed">{{ asset.symbol }}</a>
           {% include "_holding_figures.html" %}
-        </a>
+        </div>
+        {%- if asset.lookalike %}<span class="holding__note">{{ asset_badges(asset) }}</span>{% endif %}
       </li>
     {% endfor %}
   </ul>

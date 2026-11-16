@@ -9,8 +9,10 @@
   --border-hi: #313b47;
   --text:      #c8d2dc;
   --text-hi:   #f2f6fa;
-  --muted:     #6e7986;
-  --dim:       #55606c;
+  /* Raised for contrast (U-07): every text colour here is at least 4.5:1 on
+     every background it is drawn on, the lightest being --panel-2. */
+  --muted:     #8792a0;
+  --dim:       #7c8794;
   --in:        #4cb963;
   --out:       #e08040;
   --own:       #5b9bd8;
@@ -18,6 +20,11 @@
   --error:     #e05a52;
   --warn:      #cf9a2b;
   --accent:    #7fb2e0;
+  --hover:     #10151b;   /* a row or link under the pointer */
+  --border-lo: #1a2027;   /* the faintest rule, between rows */
+  --own-bg:    #0f141a;   /* a transfer between two of your own wallets */
+
+  color-scheme: dark;
 
   /* Ceiling for content that would otherwise stretch across an ultrawide
      display. The feed does not need it — its columns size to their content and
@@ -35,6 +42,35 @@
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Light: the same instrument for a reader whose system asks for light. Every
+   text colour is at least 4.5:1 on every background; the status colours keep
+   their meaning, darkened to stay legible on white. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:        #f6f7f9;
+    --panel:     #ffffff;
+    --panel-2:   #eef1f4;
+    --border:    #dfe3e8;
+    --border-hi: #c7ced6;
+    --text:      #1d2731;
+    --text-hi:   #0b1218;
+    --muted:     #56616d;
+    --dim:       #5f6a76;
+    --in:        #1c7330;
+    --out:       #a8480f;
+    --own:       #2a63a6;
+    --brand:     #17884b;
+    --error:     #b3261e;
+    --warn:      #875c00;
+    --accent:    #235f9e;
+    --hover:     #eef1f4;
+    --border-lo: #e6eaef;
+    --own-bg:    #eef3f9;
+
+    color-scheme: light;
+  }
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -46,6 +82,18 @@ body {
 }
 
 a { color: var(--accent); text-decoration: none; }
+
+/* Anything reached by keyboard says so: one 2px ring in the accent colour.
+   Pointer clicks do not show it (focus-visible). */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The row's button is its time: no button chrome, the time as it was. */
+.row__open {
+  display: inline; padding: 0; margin: 0; border: 0; background: none;
+  font: inherit; color: inherit; text-align: inherit; cursor: pointer;
+}
+.row__open:focus-visible { outline-offset: 3px; }
+.row:has(.row__open:focus-visible) td { background: var(--panel-2); }
 a:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
 .dim { color: var(--dim); }
@@ -217,7 +265,8 @@ html.conn-lost .status::after { opacity: 0.55; }
 .summary-collapsed .summary__addr { display: none; }
 /* Sits against the name, and stays visible when the panel is collapsed: that
    is exactly where it would otherwise be easy to forget whose money this is. */
-.field-toggle, .topline__scope, .holdings__more { display: none; }
+.field-toggle, .topline__scope { display: none; }
+.holdings__more .when-narrow { display: none; }
 .summary__bar { display: contents; }
 
 .summary__badge {
@@ -377,7 +426,7 @@ html.show-hidden-tokens .when-hidden { display: none; }
 .holding--more { padding: 3px 6px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
 
 .holdings__more {
-  width: 100%;
+  width: auto;
   padding: 5px 14px 2px;
   background: none;
   border: 0;
@@ -397,11 +446,17 @@ html.show-hidden-tokens .when-hidden { display: none; }
   gap: 10px;
 }
 .holdings--all { max-height: 52vh; overflow-y: auto; }
+.holdings--all a.holding__sym { color: var(--text); text-decoration: underline;
+  text-decoration-color: var(--border-hi); text-underline-offset: 2px; }
+.holdings--all a.holding__sym:hover { color: var(--accent); }
 /* The sheet is where a holding is read exactly, so its figures wrap rather
-   than run past the edge — the 34 digits of a scam token included. */
+   than run past the edge — the 34 digits of a scam token included. They wrap
+   between digit groups (<wbr> after each separator, see _macros.html), never
+   inside one; break-word, unlike anywhere, does not let the column shrink to
+   a single digit to make room. */
 .holdings--all .holding__hit { grid-template-columns: minmax(0, 4.6em) minmax(0, 1fr) auto; }
 .holdings--all .holding__hit > .holding__amount {
-  white-space: normal; overflow-wrap: anywhere; text-align: right;
+  white-space: normal; overflow-wrap: break-word; text-align: right;
 }
 .holding--muted .holding__sym,
 .holding--muted .holding__amount { color: var(--dim); }
@@ -457,6 +512,7 @@ html.inspector-open .inspector { display: block; }
   border-bottom: 1px solid var(--border);
 }
 .insp__label {
+  margin: 0;
   font: 600 10px/1 var(--sans);
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -587,7 +643,7 @@ html.inspector-open .layout { grid-template-columns: 200px minmax(0, 1fr) 330px;
   color: var(--muted);
   font-size: 12px;
 }
-.scope-link:hover { color: var(--text-hi); text-decoration: none; background: #10151b; }
+.scope-link:hover { color: var(--text-hi); text-decoration: none; background: var(--hover); }
 .scope-link.is-selected {
   color: var(--text-hi);
   background: var(--panel);
@@ -607,7 +663,7 @@ html.inspector-open .layout { grid-template-columns: 200px minmax(0, 1fr) 330px;
   text-transform: uppercase;
   color: var(--dim);
 }
-a.wallets__group:hover { color: var(--text-hi); text-decoration: none; background: #10151b; }
+a.wallets__group:hover { color: var(--text-hi); text-decoration: none; background: var(--hover); }
 .wallets__group.is-selected {
   color: var(--text-hi);
   background: var(--panel);
@@ -622,7 +678,7 @@ a.wallets__group:hover { color: var(--text-hi); text-decoration: none; backgroun
   position: relative;
   border-left: 2px solid transparent;
 }
-.wallet:hover { background: #10151b; }
+.wallet:hover { background: var(--hover); }
 .wallet.is-selected { background: var(--panel-2); border-left-color: var(--own); }
 
 .wallet__hit {
@@ -707,7 +763,7 @@ a.wallets__group:hover { color: var(--text-hi); text-decoration: none; backgroun
   text-align: left;
   cursor: pointer;
 }
-.add-wallet-link:hover { color: var(--text-hi); background: #10151b; }
+.add-wallet-link:hover { color: var(--text-hi); background: var(--hover); }
 
 .empty { padding: 14px; color: var(--muted); }
 
@@ -887,7 +943,7 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 
 .feed td {
   padding: 7px 14px;
-  border-bottom: 1px solid #1a2027;
+  border-bottom: 1px solid var(--border-lo);
   white-space: nowrap;
   vertical-align: baseline;
 }
@@ -896,8 +952,9 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 
 /* The hash is metadata until you go looking for it, and a revealed affordance
    on hover says the row itself is the thing to press. */
-.cell-tx .hash { opacity: 0.55; transition: opacity 90ms linear; }
-.row:hover .cell-tx .hash, .cell-tx .hash:focus-visible { opacity: 1; }
+/* Dimmed by colour rather than opacity: at 55% opacity it read 2.1:1. */
+.cell-tx .hash { color: var(--dim); transition: color 90ms linear; }
+.row:hover .cell-tx .hash, .cell-tx .hash:focus-visible { color: var(--muted); }
 .row.is-open td { background: var(--panel-2); }
 .row.is-open .cell-time { box-shadow: inset 2px 0 0 var(--own); }
 
@@ -934,7 +991,7 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 .row--folded[data-activity] { display: none; }
 .row--folded[data-activity].is-shown { display: table-row; }
 
-.row--more-of td { padding: 0 0 5px 84px; border-bottom: 1px solid #1a2027; }
+.row--more-of td { padding: 0 0 5px 84px; border-bottom: 1px solid var(--border-lo); }
 .row--more-of + .row--folded td { border-top: 0; }
 .foldout {
   display: inline-flex;
@@ -986,7 +1043,7 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
   max-width: 100%; color: var(--text-hi); overflow-wrap: anywhere;
 }
 .arrow { color: var(--own); }
-.row--between td, .row--self td { background: #0f141a; }
+.row--between td, .row--self td { background: var(--own-bg); }
 .row--between:hover td, .row--self:hover td { background: var(--panel); }
 .row--between .pair, .row--self .pair { font-weight: 500; }
 
@@ -1019,6 +1076,23 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 }
 .row--in  .amount { color: var(--in); }
 .row--out .amount { color: var(--out); }
+
+/* What the app concluded about an asset, in words (see _macros.html). */
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 2px;
+  font: 600 9.5px/1.5 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--warn);
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.badge--lookalike { border-style: dashed; }
+.holding__note { display: block; padding: 0 6px 4px; }
+.holding__note .badge { margin-left: 0; }
 
 .kind {
   margin-left: 6px;
@@ -1358,7 +1432,11 @@ html.inspector-open .cell-party { width: 42%; }
     flex-wrap: nowrap;
     align-items: center;
   }
-  .field__label { display: none; }
+  /* Visually hidden, not display:none — the select keeps its name (U-07). */
+  .field__label {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
   .filters .spinner { display: none; }
 
   /* A <select> is as wide as its widest option, and with fifty unrecognised
@@ -1500,6 +1578,9 @@ html.inspector-open .cell-party { width: 42%; }
   /* Both are footnotes on the list above; between them they get one line,
      not two. */
   .holdings__more { flex: 0 1 auto; order: 2; display: block; width: auto; }
+  .holdings__more:not(.has-more) { display: none; }
+  .holdings__more .when-wide { display: none; }
+  .holdings__more .when-narrow { display: inline; }
   .holdings__age { order: 3; margin-left: auto; padding: 5px 14px 2px; }
 
   /* The strip only — never the sheet, which is where the rest went. This

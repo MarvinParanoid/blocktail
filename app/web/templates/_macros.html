@@ -8,6 +8,21 @@
   {%- if compact -%}
     <span class="{{ cls }} is-compact" title="{{ title }}"><span aria-hidden="true">{{ compact }}</span><span class="sr-only">{{ exact }}</span></span>
   {%- else -%}
-    <span class="{{ cls }}"{% if raw %} title="{{ title }}"{% endif %}>{{ exact }}</span>
+    {#- A long exact figure may wrap, but only between digit groups: a line
+        break inside "000" misreads the magnitude. <wbr> copies as nothing. #}
+    <span class="{{ cls }}"{% if raw %} title="{{ title }}"{% endif %}>{{ exact|e|replace(",", ",<wbr>"|safe) }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{# What the app concluded about an asset, said in words beside it — never by
+   colour alone, and never as an accusation it cannot prove. #}
+{% macro asset_badges(item) -%}
+  {%- if item.lookalike -%}
+    <span class="badge badge--lookalike"
+          title="This ticker reads like a well-known token, but this is a different contract that nothing vouches for. Not that token.">unverified</span>
+  {%- endif -%}
+  {%- if item.excluded -%}
+    <span class="badge badge--excluded"
+          title="Its price quote is not credible, so it is not valued and is left out of the total.">not valued</span>
   {%- endif -%}
 {%- endmacro %}

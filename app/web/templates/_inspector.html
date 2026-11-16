@@ -1,6 +1,7 @@
+{% from "_macros.html" import asset_badges %}
 <div class="insp" data-selected="{{ tx.selected_id }}">
   <header class="insp__head">
-    <span class="insp__label">Transaction</span>
+    <h2 class="insp__label" id="insp-title" tabindex="-1">Transaction</h2>
     <a class="insp__hash num" href="{{ tx.tx_url }}" target="_blank" rel="noopener noreferrer"
        title="{{ tx.tx_hash }} — open on Etherscan">{{ tx.tx_short }}<span class="insp__ext" aria-hidden="true">&#8599;</span></a>
     <button type="button" class="insp__close" onclick="closeInspector()" aria-label="Close">&times;</button>
@@ -39,6 +40,7 @@
             {#- Exact, always: this is where a compact figure in the feed is read in full. -#}
             <span class="amount num"{% if t.raw_units %} title="raw on-chain units, not valued"{% endif %}>{{ t.amount_text }}</span
             >{% if t.asset_url %}<a class="sym" href="{{ t.asset_url }}" target="_blank" rel="noopener noreferrer">{{ t.symbol }}</a>{% else %}<span class="sym">{{ t.symbol }}</span>{% endif -%}
+            {{- asset_badges(t) -}}
             {%- if t.raw_units %}<span class="kind" title="Decimals unknown: raw on-chain units, not valued">raw</span>{% endif %}
             {%- if t.kind_badge %}<span class="kind">{{ t.kind_badge }}</span>{% endif %}
             {%- if t.value_text %}<span class="fiat">{{ t.value_text }}</span>{% endif %}

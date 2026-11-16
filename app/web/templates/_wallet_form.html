@@ -1,14 +1,21 @@
 {% set editing = account is not none %}
+{#- The field a refusal is about is marked invalid, points at the message and
+    takes focus; with no such field (a fresh form) focus starts on Name. -#}
+{% set focus_field = error_field or 'name' %}
+{% macro field_state(name) -%}
+  {%- if error_field == name %} aria-invalid="true" aria-describedby="wallet-error"{% endif -%}
+  {%- if focus_field == name %} autofocus{% endif -%}
+{%- endmacro %}
 <form class="sheet__form" method="post"
       action="/wallets{{ '/' ~ account.id if editing else '' }}"
       hx-post="/wallets{{ '/' ~ account.id if editing else '' }}"
       hx-target="#wallet-dialog-body" hx-swap="innerHTML">
 
-  <h2 class="sheet__title">{{ 'Rename wallet' if editing else 'Add wallet' }}</h2>
+  <h2 class="sheet__title" id="sheet-title">{{ 'Rename wallet' if editing else 'Add wallet' }}</h2>
 
   <label class="sheet__field">
     <span>Name</span>
-    <input type="text" name="name" maxlength="60" autocomplete="off" required autofocus
+    <input type="text" name="name" maxlength="60" autocomplete="off" required{{ field_state('name') }}
            value="{{ form.get('name', account.name if editing else '') }}">
   </label>
 
@@ -20,13 +27,13 @@
   {% else %}
     <label class="sheet__field">
       <span>Address</span>
-      <input type="text" name="address" autocomplete="off" spellcheck="false" required
+      <input type="text" name="address" autocomplete="off" spellcheck="false" required{{ field_state('address') }}
              placeholder="0x…" value="{{ form.get('address', '') }}">
     </label>
 
     <label class="sheet__field">
       <span>Chain</span>
-      <select name="chain">
+      <select name="chain"{{ field_state('chain') }}>
         {% for chain_id in chains %}
           <option value="{{ chain_id }}"
             {% if form.get('chain', chain.chain_id) == chain_id %}selected{% endif %}>{{ chain_id }}</option>
@@ -40,7 +47,7 @@
     </label>
   {% endif %}
 
-  {% if error %}<p class="sheet__error">{{ error }}</p>{% endif %}
+  {% if error %}<p class="sheet__error" id="wallet-error" role="alert">{{ error }}</p>{% endif %}
 
   <div class="sheet__actions">
     <button type="button" class="sheet__cancel" onclick="closeWalletDialog()">Cancel</button>

@@ -239,6 +239,11 @@ class ActivityView:
     # exact text is always rendered beside it. None: show the exact text.
     amount_compact: str | None = None
     value_compact: str | None = None
+    # Said in words beside the asset, never by colour alone. Neither is an
+    # accusation: "not valued" says the quote is not believed, "unverified"
+    # says the ticker names a different, unvouched contract than it suggests.
+    excluded: bool = False
+    lookalike: bool = False
 
     @property
     def cursor(self) -> tuple[int, int]:
@@ -291,6 +296,7 @@ def build_activity(
     scope: set[int] | None = None,
     prices: dict[int, sqlite3.Row] | None = None,
     excluded: frozenset[int] = frozenset(),
+    lookalikes: frozenset[int] = frozenset(),
 ) -> ActivityView:
     """Render one transfer from the point of view of the current scope.
 
@@ -376,6 +382,8 @@ def build_activity(
         raw_units=row["decimals"] is None,
         amount_compact=compact_amount(row["amount_raw"], row["decimals"]),
         value_compact=compact_money(value_usd),
+        excluded=row["asset_id"] in excluded and row["asset_id"] not in lookalikes,
+        lookalike=row["asset_id"] in lookalikes,
     )
 
 
@@ -577,6 +585,7 @@ class AssetTotal:
     raw_units: bool = False  # decimals unknown: the amount is raw on-chain units
     amount_compact: str | None = None  # see ActivityView
     value_compact: str | None = None
+    lookalike: bool = False  # see ActivityView
 
 
 def value_of(amount_raw: int | str, decimals: int | None, quote) -> Decimal | None:
@@ -879,6 +888,7 @@ def build_portfolio(
                     raw_units=holding.decimals is None,
                     amount_compact=compact_amount(holding.raw, holding.decimals),
                     value_compact=compact_money(value),
+                    lookalike=holding.asset_id in rules.impostor_asset_ids,
                 ),
             )
         )
@@ -997,8 +1007,9 @@ def build_transaction(
     cost: TransactionCost | None = None,
     native_price: Decimal | None = None,
     excluded: frozenset[int] = frozenset(),
+    lookalikes: frozenset[int] = frozenset(),
 ) -> TransactionView:
-    transfers = [build_activity(row, chain, scope, prices, excluded) for row in rows]
+    transfers = [build_activity(row, chain, scope, prices, excluded, lookalikes) for row in rows]
     first = transfers[0]
 
     depth = None if not head_block else max(0, head_block - first.block_number + 1)

@@ -195,12 +195,12 @@ def test_the_inspector_close_button_is_on_screen_on_the_dashboard(session, viewp
 
 
 @viewports(DESKTOP)
-@known("U-06", "feed rows are not focusable; the inspector opens by mouse only")
 def test_the_inspector_opens_from_the_keyboard(session, viewport):
+    """U-06, fixed in S6: each row has a button (its time) that takes focus."""
     page = session.open("/")
-    first = rows(page).first
-    first.focus()
-    focused = page.evaluate("() => document.activeElement?.matches('tr[data-activity]')")
+    rows(page).first.locator(".row__open").focus()
+    focused = page.evaluate(
+        "() => !!document.activeElement?.closest('tr[data-activity]')")
     assert focused, session.where("a feed row takes keyboard focus")
     page.keyboard.press("Enter")
     page.wait_for_selector("html.inspector-open", state="attached", timeout=2000)
@@ -292,29 +292,16 @@ def test_removing_a_wallet_updates_the_page(fresh_session, viewport):
 # ------------------------------------------------------------ accessibility
 
 
-# The rules axe-core reports today, per viewport (audit U-07 and U-06). The
-# comparison is exact: a new rule fails the run, and so does a fixed one, so
-# this list shrinks as the defects are fixed instead of quietly going stale.
-KNOWN_AXE = {
-    "desktop": {"color-contrast", "region", "empty-table-header"},
-    # The table header is hidden on a phone, so empty-table-header is not.
-    "mobile": {"color-contrast", "region", "select-name"},
-}
-
-
+# U-07, fixed in S6: no axe violation at all. The full matrix — four widths,
+# dark and light, the inspector open — is in test_accessibility.py; this one
+# stays in the smoke set as the quick check.
 @viewports(DESKTOP, MOBILE)
-def test_accessibility_matches_the_known_baseline(session, viewport):
+def test_accessibility_has_no_axe_violations(session, viewport):
     page = session.open("/")
     found = run_axe(page)
-    expected = KNOWN_AXE[viewport.name]
-    new = sorted(set(found) - expected)
-    fixed = sorted(expected - set(found))
     detail = ", ".join(f"{rule} ({impact}, {count} nodes)" for rule, (impact, count)
                        in sorted(found.items()))
-    assert not new, session.where(f"new axe violations: {new}; all: {detail}")
-    assert not fixed, session.where(
-        f"known violations no longer reported, update KNOWN_AXE: {fixed}; all: {detail}"
-    )
+    assert not found, session.where(f"axe violations: {detail}")
 
 
 @viewports(DESKTOP)
