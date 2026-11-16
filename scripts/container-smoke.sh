@@ -98,15 +98,19 @@ if [ -n "$PREBUILT" ]; then
     grep -rlI -e "-----BEGIN [A-Z ]*PRIVATE KEY-----" /srv /data /config /root /home /tmp /etc 2>/dev/null
     true')"
   [ -z "$found" ] || fail "files that must never ship are in the image: $found"
-  docker image inspect -f '{{json .Config.Env}}' "$TAG" | grep -qE '(ALCHEMY_API_KEY|ALCHEMY_URL|AUTH_USER|AUTH_PASSWORD)=' \
+  # grep reads a captured string, never a pipe: under pipefail, grep -q
+  # leaving early makes the writer's SIGPIPE the pipeline's status, and a
+  # match would read as a failure (and "&& fail" would never fire).
+  grep -qE '(ALCHEMY_API_KEY|ALCHEMY_URL|AUTH_USER|AUTH_PASSWORD)=' \
+      <<<"$(docker image inspect -f '{{json .Config.Env}}' "$TAG")" \
     && fail "the image config carries a credential: $(docker image inspect -f '{{json .Config.Env}}' "$TAG")"
   say "ok: no .env, wallets.yml, database, private key or credential variable in the image"
 else
   found="$(docker run --rm --entrypoint sh "$TAG" -c \
     'grep -rIl --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev -- "$0" / 2>/dev/null || true' "$KEY")"
   [ -z "$found" ] || fail "a planted secret is in the image: $found"
-  docker image inspect "$TAG" | grep -q -- "$KEY" && fail "a planted secret is in the image config"
-  docker history --no-trunc "$TAG" | grep -q -- "$KEY" && fail "a planted secret is in the image history"
+  grep -q -- "$KEY" <<<"$(docker image inspect "$TAG")" && fail "a planted secret is in the image config"
+  grep -q -- "$KEY" <<<"$(docker history --no-trunc "$TAG")" && fail "a planted secret is in the image history"
   say "ok: no planted secret in the image's files, config or history"
 fi
 
@@ -196,7 +200,7 @@ took=$((SECONDS - started))
 code="$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER")"
 case "$code" in 0|143) ;; *) fail "stopped with exit code $code" ;; esac
 [ "$took" -lt 30 ] || fail "stopping took ${took}s: it was killed, not stopped"
-compose logs --no-color | grep -q "Application shutdown complete" || fail "no clean shutdown in the log"
+grep -q "Application shutdown complete" <<<"$(compose logs --no-color)" || fail "no clean shutdown in the log"
 say "ok: stopped by SIGTERM in ${took}s, exit $code, shutdown complete"
 
 logs="$(compose logs --no-color)"

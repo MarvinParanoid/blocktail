@@ -113,7 +113,7 @@ no_errors_in_log() {  # <what> [secrets]: SQLite and filesystem errors; the key 
     fail "$1: errors in the log"
   fi
   if [ "${2:-}" = "secrets" ]; then
-    printf '%s' "$log" | grep -q -- "$KEY" && fail "$1: a secret is in the log"
+    grep -q -- "$KEY" <<<"$log" && fail "$1: a secret is in the log"
   else
     say "note: lines with the provider key in $1's log: $(printf '%s' "$log" | grep -c -- "$KEY" || true)"
   fi
@@ -173,7 +173,7 @@ cp -r "$INCOMING/scripts" "$RELEASE_SCRIPTS"
 if out="$(remote_deploy deploy "$SHA" "$INCOMING" 2>&1)"; then
   fail "a deploy without ALLOWED_HOSTS went through: $out"
 fi
-printf '%s' "$out" | grep -q ALLOWED_HOSTS || fail "the refusal does not name ALLOWED_HOSTS: $out"
+grep -q ALLOWED_HOSTS <<<"$out" || fail "the refusal does not name ALLOWED_HOSTS: $out"
 [ "$(running_id)" = "$legacy_id" ] || fail "the refused deploy changed the running image"
 [ ! -e "$REMOTE/last-good" ] && [ ! -e "$REMOTE/docker-compose.override.yml" ] \
   && [ ! -e "$REMOTE/backups" ] || fail "the refused deploy left a record, a pin or a backup"
