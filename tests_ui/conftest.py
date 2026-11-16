@@ -98,6 +98,15 @@ class Session:
     viewport: Viewport
     errors: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
+    # Console errors a test causes on purpose (taking the server down makes
+    # the browser log failed requests). Each is a regex, declared by the test.
+    expected: list[re.Pattern] = field(default_factory=list)
+
+    def expect_console_errors(self, *patterns: str) -> None:
+        self.expected.extend(re.compile(p) for p in patterns)
+
+    def unexpected_errors(self) -> list[str]:
+        return [e for e in self.errors if not any(p.search(e) for p in self.expected)]
 
     def open(self, path: str = "/") -> object:
         self.page.goto(self.stand.url + path)
@@ -168,7 +177,8 @@ def session(browser, request, stand, viewport):
     yield s
     _finish_session(request, s)
     assert not s.blocked, f"{s.where('offline')}: requests left the stand: {s.blocked}"
-    assert not s.errors, f"{s.where('console')}: JavaScript errors: {s.errors}"
+    unexpected = s.unexpected_errors()
+    assert not unexpected, f"{s.where('console')}: JavaScript errors: {unexpected}"
 
 
 @pytest.fixture
@@ -177,7 +187,8 @@ def fresh_session(browser, request, fresh_stand, viewport):
     yield s
     _finish_session(request, s)
     assert not s.blocked, f"{s.where('offline')}: requests left the stand: {s.blocked}"
-    assert not s.errors, f"{s.where('console')}: JavaScript errors: {s.errors}"
+    unexpected = s.unexpected_errors()
+    assert not unexpected, f"{s.where('console')}: JavaScript errors: {unexpected}"
 
 
 def run_axe(page) -> dict[str, list[str]]:

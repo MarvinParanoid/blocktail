@@ -117,6 +117,32 @@ a.sym:hover { color: var(--accent); }
 .status--error .status__line, .status--error .status__detail { color: var(--error); }
 .status--starting .status__detail { color: var(--own); }
 .status__detail--balances { color: var(--warn); }
+/* Indexing current, balances not: amber, with the words beside it. */
+.status--partial .status__dot { background: var(--warn); }
+.status__history {
+  padding-left: 8px;
+  border-left: 1px solid var(--border-hi);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.status__history--failed { color: var(--warn); }
+
+/* The server has stopped answering. The dot goes hollow and the bar dims: what
+   it shows is what the page last had, not what is true now. A short line says
+   so; the data stays. */
+.connection {
+  margin: 0 0 0 auto;
+  color: var(--error);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.connection__age { color: var(--muted); }
+html.conn-lost .status__dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--error); }
+html.conn-lost .status__line,
+html.conn-lost .status__detail,
+html.conn-lost .status__history,
+html.conn-lost .status::after { opacity: 0.55; }
 .status__detail {
   padding-left: 8px;
   border-left: 1px solid var(--border-hi);
@@ -1206,6 +1232,11 @@ html.inspector-open .cell-party { width: 42%; }
   .topline { flex: 1; justify-content: flex-end; gap: 12px; flex-wrap: nowrap; }
   .topline .summary { display: none; }
   .status__line { display: none; }
+  .status__history { display: none; }
+  /* Its own line under the bar, which grows to hold it, rather than an
+     overlay over the content. Only while the connection is lost. */
+  html.conn-lost .topbar { flex-wrap: wrap; row-gap: 3px; }
+  .connection { order: 3; flex-basis: 100%; margin: 0; }
   .status--error .status__detail, .status--stale .status__detail,
   .status--starting .status__detail, .status__detail--balances { display: block; }
   .status::after {

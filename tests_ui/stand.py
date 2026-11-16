@@ -224,11 +224,7 @@ class Stand:
         )
         logging.getLogger().addHandler(self._log_handler)
         logging.getLogger().setLevel(logging.INFO)
-        config = uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="warning",
-                                access_log=False)
-        self._server = uvicorn.Server(config)
-        self._thread = threading.Thread(target=self._server.run, daemon=True)
-        self._thread.start()
+        self._serve()
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if self._server.started:
@@ -238,14 +234,45 @@ class Stand:
             time.sleep(0.05)
         raise RuntimeError("the stand did not finish its first sync in 30 s")
 
-    def stop(self) -> None:
+    def _serve(self) -> None:
+        config = uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="warning",
+                                access_log=False)
+        self._server = uvicorn.Server(config)
+        self._thread = threading.Thread(target=self._server.run, daemon=True)
+        self._thread.start()
+
+    def _halt(self) -> None:
         if self._server is not None:
             self._server.should_exit = True
         if self._thread is not None:
             self._thread.join(timeout=15)
+
+    def take_down(self) -> None:
+        """Stop answering, as a crashed or restarting server would; the
+        database and the browser page stay as they are."""
+        self._halt()
+
+    def bring_back(self) -> None:
+        """Serve again on the same port. The app's lifespan runs again (a
+        restart); the indexer's events belong to the old event loop and are
+        replaced, the way a fresh process would have new ones."""
+        indexer = self.app.state.ctx.indexer
+        indexer._stop = asyncio.Event()
+        indexer._wake = asyncio.Event()
+        self._serve()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if self._server.started:
+                return
+            time.sleep(0.05)
+        raise RuntimeError("the stand did not come back in 15 s")
+
+    def stop(self) -> None:
+        self._halt()
         if getattr(self, "_log_handler", None) is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler.close()
+            self._log_handler = None
 
     def account_id(self, name: str) -> int:
         return next(a.id for a in self.db.list_accounts() if a.name == name)
