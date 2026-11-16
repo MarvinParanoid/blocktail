@@ -7,7 +7,16 @@
 <div class="app">
 <header class="topbar">
   <h1 class="brand" title="tail -f for your wallets">blocktail<span class="caret" aria-hidden="true">_</span></h1>
+  {# Outside the polled fragment on purpose: it is what the page says when
+     that fragment stops arriving. Shown only then. #}
+  <p id="connection" class="connection" hidden>
+    <span class="connection__msg">Connection lost</span>
+    <span class="connection__age" aria-hidden="true"></span>
+  </p>
   {% include "_status.html" %}
+  {# The one place state changes are announced: when the connection is lost
+     or restored, or the sync state changes — never the ticking age. #}
+  <p id="status-live" class="sr-only" role="status" aria-live="polite"></p>
 </header>
 
 {% include "_summary.html" %}

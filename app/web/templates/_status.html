@@ -17,15 +17,25 @@
     <span class="num">{{ summary.native_total }}</span> {{ summary.native_symbol }}
   </span>
 
-  <span class="status status--{{ status.state }}" data-age="{{ status.updated_text }}">
+  {# The state is the server's; the age is the browser's. The server says when
+     the last sync succeeded and what its clock read; the page counts the age
+     up from there every second, so it keeps growing when polls stop arriving
+     — which the page also notices and says (see the connection notice). #}
+  {% set partial = status.balance_detail and status.state in ('ok', 'lagging') %}
+  <span class="status status--{{ status.state }}{{ ' status--partial' if partial }}"
+        data-state="{{ status.state }}{{ '+balances' if partial }}"
+        data-age="{{ status.updated_text }}"
+        {%- if status.updated_at %} data-updated="{{ status.updated_at }}"{% endif %}
+        data-now="{{ status.rendered_at }}">
     <span class="status__dot" aria-hidden="true"></span>
     <span class="status__line">
       {{ status.chain_name }}
       <span class="sep">&middot;</span> #{{ status.head_block_text }}
-      <span class="sep">&middot;</span> {{ status.updated_text }}
+      <span class="sep">&middot;</span> <span class="status__age">{{ status.updated_text }}</span>
     </span>
-    {% if status.detail %}<span class="status__detail" role="status">{{ status.detail }}</span>
-    {% elif status.balance_detail %}<span class="status__detail status__detail--balances" role="status"
+    {% if status.detail %}<span class="status__detail">{{ status.detail }}</span>
+    {% elif status.balance_detail %}<span class="status__detail status__detail--balances"
           title="Indexing is current. The balances shown are the last ones read; they are retried every cycle.">{{ status.balance_detail }}</span>{% endif %}
+    {% if status.history_detail %}<span class="status__history{{ ' status__history--failed' if status.history_failed }}">{{ status.history_detail }}</span>{% endif %}
   </span>
 </div>

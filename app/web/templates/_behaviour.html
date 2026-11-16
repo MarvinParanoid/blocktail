@@ -362,10 +362,139 @@
   // under someone who has scrolled into history or paged further back.
   setInterval(() => {
     if (document.hidden) return;
+    if (window.blocktail && window.blocktail.connection.lost) return;
     if (document.body.dataset.paged === '1') return;
     const scroller = document.querySelector('.table-scroll');
     const offset = scroller && scroller.scrollTop ? scroller.scrollTop : window.scrollY;
     if (offset > 300) return;
     document.body.dispatchEvent(new Event('refreshFeed'));
   }, 15000);
+
+  // --- connection -------------------------------------------------------
+  //
+  // The status bar is a fragment the server re-renders every few seconds.
+  // When the server stops answering, nothing replaces it, so on its own it
+  // would keep saying "synced, 2s ago" for ever. This is what notices.
+  //
+  // * Every request for the status ends in htmx:afterRequest. A failed one —
+  //   no response at all (status 0), or a 5xx — means the page has lost the
+  //   server; a successful one means it has it again. A provider failure is
+  //   not this: the server answers, and says so in the fragment itself.
+  // * The age is counted here, every second, from the time the server says
+  //   the last sync succeeded, corrected by the server's clock — so it keeps
+  //   growing while the server is gone, and is right after it comes back.
+  // * Nothing is replaced or zeroed while the connection is lost: the page
+  //   keeps what it last had, and says how old that is.
+  //
+  // Wired once, on the page — never on the fragment, which is replaced every
+  // poll. The interval is the only timer; the polling itself is htmx's own.
+  (function watchConnection() {
+    if (window.blocktail && window.blocktail.connection) return;
+    const html = document.documentElement;
+    const notice = document.getElementById('connection');
+    const live = document.getElementById('status-live');
+    const conn = {
+      lost: false,
+      lastReply: Date.now(),   // the browser's clock: when the server last answered
+      offset: 0,               // server clock minus browser clock, in ms
+      announced: null,
+      stats: { handled: 0, ticks: 0 },
+    };
+    window.blocktail = Object.assign(window.blocktail || {}, { connection: conn });
+
+    // The same wording the server uses, so a reload does not change the text.
+    function ago(seconds) {
+      const s = Math.max(0, Math.floor(seconds));
+      if (s < 60) return s + 's ago';
+      if (s < 3600) return Math.floor(s / 60) + 'm ago';
+      if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+      return Math.floor(s / 86400) + 'd ago';
+    }
+    function clock(ms) {
+      return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    function status() { return document.querySelector('#topline .status'); }
+
+    function readServer() {
+      const s = status();
+      if (s && s.dataset.now) conn.offset = Number(s.dataset.now) * 1000 - Date.now();
+    }
+
+    function tick() {
+      const s = status();
+      if (s && s.dataset.updated) {
+        const text = ago((Date.now() + conn.offset) / 1000 - Number(s.dataset.updated));
+        const age = s.querySelector('.status__age');
+        if (age && age.textContent !== text) age.textContent = text;
+        if (s.dataset.age !== text) s.dataset.age = text;
+      }
+      if (conn.lost) {
+        notice.querySelector('.connection__age').textContent =
+          '· last reply ' + ago((Date.now() - conn.lastReply) / 1000);
+      }
+    }
+
+    function say(text) { if (live.textContent !== text) live.textContent = text; }
+
+    function lose(code) {
+      const message = code ? 'Server error (HTTP ' + code + ')' : 'Connection lost';
+      notice.querySelector('.connection__msg').textContent = message;
+      if (conn.lost) return;
+      conn.lost = true;
+      html.classList.add('conn-lost');
+      notice.hidden = false;
+      say(message + '. The page shows what it had at ' + clock(conn.lastReply) + '.');
+      tick();
+    }
+
+    function regain() {
+      conn.lastReply = Date.now();
+      readServer();
+      if (conn.lost) {
+        conn.lost = false;
+        html.classList.remove('conn-lost');
+        notice.hidden = true;
+        say('Connection restored.');
+      }
+      // Announce a change of sync state — not every poll.
+      const s = status();
+      const state = s ? s.dataset.state : null;
+      if (state && conn.announced !== null && state !== conn.announced) {
+        const detail = s.querySelector('.status__detail');
+        say(state.startsWith('ok') && !state.includes('+') ? 'Synced.'
+            : (detail ? detail.textContent.trim() : 'Sync state: ' + state + '.'));
+      }
+      conn.announced = state;
+      tick();
+    }
+
+    // A good reply replaces #topline (outerHTML), and htmx:afterRequest then
+    // fires on the detached old element, where it never reaches the body. So
+    // a reply is seen before the swap, while the element is still in place,
+    // and handled once the new one is.
+    document.body.addEventListener('htmx:beforeSwap', (evt) => {
+      const target = evt.detail.target;
+      const code = evt.detail.xhr ? evt.detail.xhr.status : 0;
+      if (!target || target.id !== 'topline' || code >= 400) return;
+      conn.stats.handled += 1;
+      setTimeout(regain, 0);
+    });
+
+    // A failed request swaps nothing, so this one does reach the body. No
+    // answer at all (status 0), or a server error, is a lost server — from
+    // the status poll or from any other request on the page.
+    document.body.addEventListener('htmx:afterRequest', (evt) => {
+      if (evt.detail.successful) return;
+      const code = evt.detail.xhr ? evt.detail.xhr.status : 0;
+      const elt = evt.detail.elt;
+      if (elt && elt.id === 'topline') conn.stats.handled += 1;
+      if (code === 0 || code >= 500) lose(code || null);
+    });
+
+    readServer();
+    conn.announced = status() ? status().dataset.state : null;
+    tick();
+    // The one timer. Counted, so a test can tell one from several.
+    setInterval(() => { conn.stats.ticks += 1; tick(); }, 1000);
+  })();
 </script>

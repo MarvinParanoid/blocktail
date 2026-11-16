@@ -425,6 +425,14 @@ class StatusView:
     # Indexing can be fine while balances are not; said apart, in amber, and
     # never in place of the indexing state.
     balance_detail: str = ""
+    # A request for older history in hand, or one that failed.
+    history_detail: str = ""
+    history_failed: bool = False
+    # For the browser, which counts the age up between polls and notices when
+    # the polls stop arriving: when the last sync succeeded, and the server's
+    # clock when this was rendered (to cancel out a skewed client clock).
+    updated_at: int | None = None
+    rendered_at: int = 0
 
 
 def build_status(
@@ -451,6 +459,14 @@ def build_status(
     else:
         state, detail = "ok", ""
 
+    history_detail = ""
+    if status.history_status == "queued":
+        history_detail = "older history queued"
+    elif status.history_status == "running":
+        history_detail = "indexing older history"
+    elif status.history_status == "failed":
+        history_detail = "older history failed; retrying each sync"
+
     balance_detail = ""
     if status.balances_error:
         when = relative_time(status.balances_failed_at, now=now)
@@ -467,6 +483,10 @@ def build_status(
         activity_count=status.activity_count,
         backfilling=not status.backfill_done,
         balance_detail=balance_detail,
+        history_detail=history_detail,
+        history_failed=status.history_status == "failed",
+        updated_at=status.last_success_at,
+        rendered_at=now,
     )
 
 

@@ -51,10 +51,29 @@ stand and the test fails if one was attempted.
 | Removing a wallet updates sidebar, feed and scope | 1440 |
 | axe-core matches the known baseline | 1440, 390 |
 | Main controls reachable with Tab | 1440 |
+| Connection status (`test_connection.py`, below) | 1440, 390 |
 | No JavaScript or console errors, no request leaves the stand | every test |
 
 The history test holds the stand's deep fetch behind a gate, so "running" is
 observable, then opens it.
+
+### Connection status
+
+`test_connection.py` takes the stand's server down while the page stays open
+(`Stand.take_down()`) and brings it back on the same port
+(`Stand.bring_back()`), so the browser sees exactly what a crashed or
+restarting server looks like. It checks that the page says the connection is
+lost within one poll, keeps its data, keeps counting the age, and returns to a
+current status without a reload; that a provider failure, a balance warning
+and a history request are each shown as what they are and not as a lost
+connection; and that the status, replaced every poll, is watched by one
+handler and one timer however many polls go by.
+
+While the server is down the browser logs the failed requests. Those tests
+declare exactly those messages (`session.expect_console_errors(...)`:
+`ERR_CONNECTION_REFUSED`, "Failed to load resource", and htmx's
+`htmx:sendError` / `htmx:afterRequest`); any other console error still fails
+the test. A connection test takes 5–15 s, most of it waiting for polls.
 
 ## Known defects
 

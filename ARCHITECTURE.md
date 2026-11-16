@@ -378,6 +378,33 @@ honours from then on, and the request's state is stored beside it. A request
 that was running when the process stopped is queued again at startup. Closing
 the page changes nothing.
 
+### What the status bar claims
+
+The status bar is a fragment the server renders and the page polls every five
+seconds. It shows four different things, and keeps them apart:
+
+* **The sync state**, decided by the server: synced, lagging, stale, failed
+  (the provider's error, in red), or starting.
+* **Balances**, also the server's: when indexing is current but a balance
+  read failed, the dot turns amber and a line says the balances are the last
+  known ones — not "fully healthy", not an indexing error.
+* **Older history**, while a request for it is queued or running, or after
+  it failed.
+* **The connection**, which only the browser can know. When a poll gets no
+  answer, or a 5xx, the page marks the connection lost: the dot goes hollow,
+  the bar dims, and a short line says "Connection lost · last reply 40s ago".
+  The data on the page stays as it was. The first poll that is answered again
+  clears it; nothing reloads.
+
+The age ("12s ago") is counted in the browser every second, from the time the
+server says the last sync succeeded, corrected by the server's clock — so it
+keeps growing while the server is unreachable, and an old status can never
+look fresh. State changes (connection lost or restored, a change of sync
+state) are announced once, in a live region outside the polled fragment; the
+ticking age is not announced. One listener and one timer watch the fragment,
+wired once on the page rather than on the fragment that is replaced every
+poll, and the feed's own refresh pauses while the connection is lost.
+
 ### One cycle at a time
 
 A cycle is single-flight. `Indexer.run_once()` starts one, or joins the one

@@ -2181,3 +2181,44 @@ def test_a_disbelieved_asset_never_leads_the_compact_list(client, settings, prov
     excluded = re.findall(r'class="holding[^"]*holding--excluded[^"]*"', body)
     assert excluded, "the fixture produces an excluded asset"
     assert all("holding--compact" not in c for c in excluded)
+
+
+# ------------------------------------------- status data for the browser (S4)
+
+
+def test_the_status_fragment_carries_what_the_browser_counts_from(client):
+    """The page counts the age itself between polls, so the fragment says when
+    the last sync succeeded and what the server's clock read."""
+    html = client.get("/status").text
+    status = client.ctx.db.get_sync_status("ethereum")
+    assert f'data-updated="{status.last_success_at}"' in html
+    now = int(re.search(r'data-now="(\d+)"', html).group(1))
+    assert abs(now - time.time()) < 5
+    assert 'class="status__age"' in html
+    assert 'data-state="ok"' in html
+
+
+def test_a_balance_warning_marks_the_status_partial(client):
+    client.ctx.db.record_balances("ethereum", "HTTP 503")
+    html = client.get("/status").text
+    assert "status--partial" in html and 'data-state="ok+balances"' in html
+
+
+def test_a_history_request_is_named_in_the_status(client):
+    client.ctx.db.request_history("ethereum", 1000)
+    assert "older history queued" in client.get("/status").text
+    client.ctx.db.history_started("ethereum")
+    assert "indexing older history" in client.get("/status").text
+    client.ctx.db.history_finished("ethereum", "provider down")
+    assert "status__history--failed" in client.get("/status").text
+    client.ctx.db.request_history("ethereum", 1000)
+    client.ctx.db.history_started("ethereum")
+    client.ctx.db.history_finished("ethereum")
+    assert "status__history" not in client.get("/status").text, "completed: nothing to say"
+
+
+def test_the_page_has_one_connection_notice_outside_the_polled_fragment(client):
+    page = client.get("/").text
+    assert page.count('id="connection"') == 1 and page.count('id="status-live"') == 1
+    topline = client.get("/status").text
+    assert 'id="connection"' not in topline and 'id="status-live"' not in topline
