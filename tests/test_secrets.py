@@ -383,3 +383,150 @@ def test_exception_arguments_are_scrubbed(tmp_path, debug_log):
     )
     assert "price refresh failed: ConnectError: to https://" in debug_log.text
     assert not leaks(debug_log.text)
+
+
+# ------------------------------------------------------- S0 follow-up checks
+
+
+@pytest.mark.parametrize("auth", [False, True])
+def test_healthz_stays_200_while_the_provider_rejects_the_key(tmp_path, auth):
+    """Liveness is not provider health: a rejected key must not make the
+    orchestrator restart a container that is serving fine."""
+    overrides = {"auth_user": "admin", "auth_password": "correct horse"} if auth else {}
+    provider = alchemy(lambda request: httpx.Response(401))
+    app, client = run_failing_cycle(tmp_path, provider, **overrides)
+    try:
+        health = client.get("/healthz")
+        assert health.status_code == 200
+        assert health.json()["status"] == "ok"
+        if not auth:
+            assert health.json()["sync_state"] == "error"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def counting(handler):
+    calls = {"n": 0}
+
+    def wrapped(request):
+        calls["n"] += 1
+        return handler(request)
+
+    return wrapped, calls
+
+
+AUTH_403_BODIES = [
+    {"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "Must be authenticated!"}},
+    {"error": {"message": "Unspecified origin not on whitelist."}},
+    {"error": {"message": "ETH_MAINNET is not enabled for this app."}},
+]
+
+
+def test_a_401_is_not_retried():
+    handler, calls = counting(lambda request: httpx.Response(401, json={"error": "no"}))
+    provider = alchemy(handler, max_retries=4)
+    with pytest.raises(Exception) as caught:
+        run(provider.get_head_block())
+    run(provider.close())
+    assert calls["n"] == 1, "a rejected key does not get better by asking again"
+    assert "HTTP 401" in str(caught.value) and "ALCHEMY_API_KEY" in str(caught.value)
+
+
+@pytest.mark.parametrize("body", AUTH_403_BODIES)
+def test_a_403_that_says_access_is_denied_is_not_retried(body):
+    handler, calls = counting(lambda request: httpx.Response(403, json=body))
+    provider = alchemy(handler, max_retries=4)
+    with pytest.raises(Exception) as caught:
+        run(provider.get_head_block())
+    run(provider.close())
+    assert calls["n"] == 1
+    assert "HTTP 403" in str(caught.value) and "://" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(403),
+        httpx.Response(403, json={"error": {"code": 429, "message":
+            "Your app has exceeded its compute units per second capacity."}}),
+    ],
+)
+def test_a_throttling_403_is_still_retried(response, monkeypatch):
+    """The existing policy: Alchemy answers a burst with 403."""
+    import app.chains.ethereum.alchemy as module
+
+    async def no_wait(_):
+        return None
+
+    monkeypatch.setattr(module.asyncio, "sleep", no_wait)
+    handler, calls = counting(lambda request: response)
+    provider = alchemy(handler, max_retries=3)
+    with pytest.raises(Exception):
+        run(provider.get_head_block())
+    run(provider.close())
+    assert calls["n"] == 3
+
+
+@pytest.mark.parametrize("status, body", [(401, None), (403, AUTH_403_BODIES[0])])
+def test_the_price_source_does_not_retry_a_denial(status, body):
+    from app.prices import PriceError
+
+    handler, calls = counting(lambda request: httpx.Response(status, json=body))
+    prices = AlchemyPrices(
+        KEY, base_url=PRICES_BASE, max_retries=3,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(PriceError) as caught:
+        run(prices._request("GET", "/tokens/by-symbol"))
+    run(prices.close())
+    assert calls["n"] == 1
+    assert f"HTTP {status}" in str(caught.value) and KEY not in str(caught.value)
+
+
+def test_the_price_source_still_retries_a_temporary_failure(monkeypatch):
+    import app.prices as module
+
+    async def no_wait(_):
+        return None
+
+    monkeypatch.setattr(module.asyncio, "sleep", no_wait)
+    handler, calls = counting(lambda request: httpx.Response(503))
+    prices = AlchemyPrices(
+        KEY, base_url=PRICES_BASE, max_retries=3,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(Exception):
+        run(prices._request("GET", "/tokens/by-symbol"))
+    run(prices.close())
+    assert calls["n"] == 3
+
+
+SHORT_PASSWORD = "Zq7!x"  # below the redaction minimum on purpose
+
+
+def test_settings_do_not_print_their_secrets(tmp_path):
+    settings = keyed_settings(tmp_path, auth_user="admin", auth_password=SHORT_PASSWORD)
+    text = repr(settings) + str(settings)
+    assert SHORT_PASSWORD not in text
+    assert KEY not in text
+
+
+def test_a_short_basic_auth_password_appears_in_no_diagnostics(tmp_path, debug_log):
+    """Short passwords are not registered with the scrubber (they would mask
+    ordinary words), so the guarantee is that nothing writes one down."""
+    provider = alchemy(lambda request: httpx.Response(401))
+    app, client = run_failing_cycle(
+        tmp_path, provider, auth_user="admin", auth_password=SHORT_PASSWORD
+    )
+    try:
+        client.auth = ("admin", SHORT_PASSWORD)
+        assert client.get("/").status_code == 200
+        bodies = [client.get(path).text for path in ("/", "/status", "/api/status", "/healthz")]
+        bodies.append(client.get("/", auth=("admin", "wrong")).text)
+        for body in bodies:
+            assert SHORT_PASSWORD not in body
+        assert SHORT_PASSWORD not in stored_error(app.state.ctx)
+        assert SHORT_PASSWORD not in debug_log.text
+        assert SHORT_PASSWORD not in repr(app.state.ctx)
+    finally:
+        client.__exit__(None, None, None)

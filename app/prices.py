@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 
 from app.models import AssetRef
-from app.redact import describe_failure
+from app.redact import describe_failure, is_access_denied
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,11 @@ class AlchemyPrices:
         for attempt in range(self._max_retries):
             try:
                 response = await self._client.request(method, f"{self._base}{path}", **kwargs)
+                if is_access_denied(response):
+                    raise PriceError(
+                        f"prices {path} failed: HTTP {response.status_code}"
+                        " (the provider refused this key or app)"
+                    )
                 if response.status_code in _RETRY_STATUS:
                     last = f"HTTP {response.status_code}"
                 else:

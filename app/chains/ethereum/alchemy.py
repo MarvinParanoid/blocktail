@@ -17,7 +17,7 @@ import httpx
 
 from app.chains.ethereum.chain import ZERO_ADDRESS, EthereumChain
 from app.models import NATIVE, AssetRef, Balance, TransactionCost, Transfer, TransferKind
-from app.redact import describe_failure
+from app.redact import describe_failure, is_access_denied
 
 log = logging.getLogger(__name__)
 
@@ -91,14 +91,20 @@ class AlchemyProvider:
         payload = {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params}
         delay = 0.5
         last_error = "no attempt made"
-        last_status: int | None = None
 
         for attempt in range(self._max_retries):
             try:
                 async with self._semaphore:
                     response = await self._client.post(self._url, json=payload)
+                if is_access_denied(response):
+                    # Asking again changes nothing and spends the time a
+                    # throttled caller would back off for.
+                    raise ProviderError(
+                        f"{method} failed: HTTP {response.status_code}"
+                        " (the provider refused this key or app: check ALCHEMY_API_KEY"
+                        " and the app's settings at the provider)"
+                    )
                 if response.status_code in _RETRY_STATUS:
-                    last_status = response.status_code
                     last_error = f"HTTP {response.status_code}"
                     if response.status_code in _THROTTLED:
                         # Backing off by the usual step just walks into the same
@@ -115,7 +121,7 @@ class AlchemyProvider:
             except ProviderError:
                 raise
             except (httpx.HTTPError, ValueError) as exc:
-                last_status, last_error = describe_failure(exc)
+                _, last_error = describe_failure(exc)
 
             if attempt < self._max_retries - 1:
                 # Jitter, so several stalled requests do not all resume together
@@ -123,12 +129,7 @@ class AlchemyProvider:
                 await asyncio.sleep(delay * (1 + random.random() * 0.4))
                 delay *= 2
 
-        hint = ""
-        if last_status == 401:
-            hint = " (the provider rejected the key: check ALCHEMY_API_KEY)"
-        raise ProviderError(
-            f"{method} failed after {self._max_retries} attempts: {last_error}{hint}"
-        )
+        raise ProviderError(f"{method} failed after {self._max_retries} attempts: {last_error}")
 
     # -------------------------------------------------------------- queries
 

@@ -71,6 +71,34 @@ def describe_failure(exc: Exception) -> tuple[int | None, str]:
     return None, f"unreadable response ({type(exc).__name__})"
 
 
+# Phrases a provider uses when it refuses this key or this app, as opposed to
+# refusing this moment. Alchemy answers a burst of traffic with 403 too, so a
+# 403 is only treated as a denial when it says so — and never when it talks
+# about capacity or limits.
+_DENIAL_MARKERS = (
+    "authenticat", "unauthori", "api key", "apikey", "invalid key",
+    "not enabled", "whitelist", "allowlist", "not allowed", "permission",
+)
+_THROTTLE_MARKERS = ("capacity", "rate limit", "rate-limit", "too many", "throughput", "exceeded")
+
+
+def is_access_denied(response: httpx.Response) -> bool:
+    """Whether a response means "this key or app may not do this" — which no
+    retry will change — rather than "not right now".
+
+    401 always does. 403 only when its body says so: the existing policy
+    retries a bare 403, because that is how Alchemy answers a burst.
+    """
+    if response.status_code == 401:
+        return True
+    if response.status_code != 403:
+        return False
+    text = response.text[:2000].lower()
+    if any(marker in text for marker in _THROTTLE_MARKERS):
+        return False
+    return any(marker in text for marker in _DENIAL_MARKERS)
+
+
 def register_secret(value: str | None) -> None:
     """Remember a value that must never be written down verbatim."""
     if value and len(value) >= _MIN_SECRET_LENGTH:
