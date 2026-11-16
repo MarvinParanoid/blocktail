@@ -144,10 +144,42 @@ def test_the_container_runs_with_least_privilege():
     assert SERVICE["read_only"] is True
     assert SERVICE["cap_drop"] == ["ALL"]
     assert "cap_add" not in SERVICE
-    assert "no-new-privileges:true" in SERVICE["security_opt"]
     assert "user" not in SERVICE, "the image's user, not root"
     tmp = [t for t in SERVICE["tmpfs"] if t.startswith("/tmp:")]
     assert tmp and "size=" in tmp[0], "a bounded /tmp: SQLite's temp files land there"
+
+
+def test_no_new_privileges_is_not_set_because_snap_docker_refuses_every_exec_under_it():
+    """RC2b.1: on the production host Docker is the snap package, whose
+    AppArmor profile (snap.docker.dockerd) denies every exec in a container
+    started with no-new-privileges ("exec /usr/bin/sh: operation not
+    permitted"); the first production deploy crash-looped on it. It adds
+    nothing here that the rest does not already give: the process is not
+    root, has no capabilities (cap_drop ALL), and the image has no setuid
+    program it could use. Every other restriction stays — see the test
+    above and docs/production.md."""
+    for option in SERVICE.get("security_opt", []):
+        assert "no-new-privileges" not in option, option
+    assert SERVICE["read_only"] is True and SERVICE["cap_drop"] == ["ALL"]
+    assert SERVICE["mem_limit"] == "512m" and int(SERVICE["pids_limit"]) == 256
+    assert any(t.startswith("/tmp:") for t in SERVICE["tmpfs"])
+    assert SERVICE["ports"] == ["127.0.0.1:${HOST_PORT:-8000}:8000"]
+    assert SERVICE["environment"]["ALLOWED_HOSTS"].startswith("${ALLOWED_HOSTS:?")
+    assert SERVICE["volumes"] == ["./wallets.yml:/config/wallets.yml:ro", "blocktail-data:/data"]
+
+
+def test_the_image_has_no_setuid_or_setgid_program():
+    """What no-new-privileges used to block — a non-root process becoming root
+    through su, mount, passwd and the like (Debian ships eleven) — is not
+    possible when no file carries the bit. container-smoke.sh checks the
+    built image for it."""
+    strip = [rest for word, rest in DOCKER if word == "RUN" and "chmod a-s" in rest]
+    assert strip and "-perm /6000" in strip[0] and "-xdev" in strip[0], strip
+    user_at = next(i for i, (w, r) in enumerate(DOCKER) if w == "USER")
+    strip_at = next(i for i, (w, r) in enumerate(DOCKER) if w == "RUN" and "chmod a-s" in r)
+    assert strip_at < user_at, "stripped as root, before the switch to the app's user"
+    smoke = (ROOT / "scripts" / "container-smoke.sh").read_text()
+    assert "-perm /6000" in smoke
 
 
 def test_the_container_is_bounded():
@@ -253,7 +285,10 @@ def test_ci_rolls_back_to_what_production_runs():
     test = next(s for s in jobs["rollback"]["steps"] if "tests/test_rollback.py" in s.get("run", ""))
     assert test["env"]["BLOCKTAIL_ROLLBACK_REQUIRED"] == "1"
     assert test["env"]["BLOCKTAIL_ROLLBACK_BASE"]
-    assert any(s.get("run", "").startswith("scripts/rollback-smoke.sh") for s in jobs["image"]["steps"])
+    smokes = [s.get("run", "") for s in jobs["image"]["steps"]
+              if s.get("run", "").startswith("scripts/rollback-smoke.sh")]
+    assert any("--after-failed-attempt" not in r for r in smokes), "scenarios A to J"
+    assert any("--after-failed-attempt" in r for r in smokes), "the server as RC2b.1 left it"
 
 
 def test_ci_ships_the_image_it_checked():

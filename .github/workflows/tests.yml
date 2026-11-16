@@ -165,11 +165,16 @@ jobs:
         run: scripts/container-smoke.sh blocktail:ci
       - name: container smoke of the release image
         run: scripts/container-smoke.sh --prebuilt "$RELEASE_IMAGE"
-      # The first deploy onto a legacy server (main's image and compose) and a
-      # rollback to it, with the real remote-deploy.sh: it deploys the release
-      # image, never a rebuild (local Docker, a directory it made, no host).
-      - name: first deploy and rollback
+      # Deploys and rollbacks with the real remote-deploy.sh on a server laid
+      # out as production (main's image and compose): the release image, never
+      # a rebuild; local Docker, a directory it made, no host. A–J: the first
+      # deploy, a refused one, a runtime check that fails, a health check that
+      # fails, the rollback to the old image AND compose, and a damaged state.
+      - name: deploys and rollbacks, scenarios A to J
         run: scripts/rollback-smoke.sh "$BLOCKTAIL_ROLLBACK_BASE"
+      # The server as the failed production attempt (RC2b.1) left it.
+      - name: deploy and rollback after the failed attempt
+        run: scripts/rollback-smoke.sh --after-failed-attempt "$BLOCKTAIL_ROLLBACK_BASE"
       - name: the release artifact
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/')
         run: scripts/release-image.sh "$RELEASE_IMAGE" release
