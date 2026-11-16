@@ -289,6 +289,36 @@ Pruning runs **only after a fully successful cycle**. If any wallet's fetch
 fails, the cycle records the error, leaves the watermark where it was, and
 deletes nothing.
 
+The scan covers active wallets only, so only events with an active end are
+candidates. An event of a removed wallet is not in the scan because nobody
+looked, not because the chain dropped it, and it is kept.
+
+### Removed wallets
+
+Removing a wallet — from the page, or from `wallets.yml` — archives the account
+and keeps every event it was part of. Nothing is deleted. What changes is one
+invariant: **the account columns of an activity only ever name active
+accounts.** `relink_accounts()` maintains it, and every write that changes an
+account runs it — adding, removing, applying the config file — while
+`store_transfers()` links new rows against the accounts active at that moment.
+
+Everything on the read side follows from that, without a second rule:
+
+* An event shows when at least one end is active. One between two removed
+  wallets is in the table and nowhere on the page, nor in the inspector.
+* An event with one active end reads from that end. `Main → Temp` becomes an
+  ordinary OUT from Main once Temp is removed, with Temp's address — not its
+  old name — as the counterparty; a pair inside the scope unfolds the same way.
+* IN/OUT, the scopes, the asset filter and "sent by one of your wallets" only
+  ever see active accounts.
+* Re-adding the address, from the page or the file and under any name,
+  attributes its history again at once, and indexing resumes from the account's
+  own watermark instead of backfilling.
+
+A restart, where nothing changed, makes `relink_accounts()` touch no rows: it
+releases what inactive accounts hold and attributes what active ones lack,
+rather than rewriting every row.
+
 ### Balances
 
 A balance cannot change without a transfer, and the cycle has just read every

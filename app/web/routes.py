@@ -6,6 +6,7 @@ The JSON contracts use chain-neutral names (``chain``, ``account``, ``asset``,
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -664,9 +665,6 @@ def add_wallet(
     except ValueError as exc:
         return _form_response(request, ctx, form=form, error=str(exc), status=422)
 
-    # Attribute any history already indexed through another wallet; the next
-    # cycle reaches back for the rest.
-    ctx.db.relink_accounts()
     log.info("added account %s (%s) via the UI", added.name, added.address)
     return _form_response(request, ctx)
 
@@ -736,7 +734,15 @@ def remove_wallet(request: Request, account_id: int):
             status=422,
         )
     log.info("stopped watching account %s", removed)
-    return _form_response(request, ctx)
+    response = _form_response(request, ctx)
+    # The feed on screen still holds the removed wallet's rows, and may be
+    # scoped to it: the page drops both at once rather than on its next timer.
+    # htmx fires these in order, and "removed" must clear the selection before
+    # "changed" makes the summary and the sidebar ask for the scope again.
+    response.headers["HX-Trigger"] = json.dumps(
+        {"wallet-removed": {"id": account_id}, "wallet-changed": None}
+    )
+    return response
 
 
 @router.get("/summary", response_class=HTMLResponse)

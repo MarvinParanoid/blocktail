@@ -146,10 +146,9 @@ def create_app(
         if listed := getattr(ctx.chain, "token_decimals", None):
             ctx.db.adopt_listed_decimals(ctx.chain.chain_id, listed)
 
+        # Also re-derives the account columns: a wallet added to the file picks
+        # up history already indexed, and one removed from it lets go of its own.
         accounts = ctx.db.apply_watch_config(ctx.config)
-        # A wallet added to the config after some history was already indexed
-        # must pick up that history, so re-derive the account columns.
-        ctx.db.relink_accounts()
         log.info(
             "watching %d wallet(s) on %s: %s",
             len(accounts),
