@@ -179,8 +179,7 @@ class Indexer:
             return result
 
         result.fetched = len(transfers)
-        account_index = {(a.chain_id, a.address): a.id for a in accounts}
-        result.stored = await asyncio.to_thread(self.db.store_transfers, transfers, account_index)
+        result.stored = await asyncio.to_thread(self.db.store_transfers, transfers)
         result.pruned = await asyncio.to_thread(
             self._prune, transfers, from_block, head
         )

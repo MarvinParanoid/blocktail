@@ -134,6 +134,18 @@
   }
 
   // The server signals a successful change; nothing needs to parse the response.
+  // A removed wallet's history leaves the feed now, not on the next refresh,
+  // and a feed scoped to that wallet goes back to everything.
+  document.body.addEventListener('wallet-removed', (evt) => {
+    const wallet = document.getElementById('wallet-value');
+    if (wallet && evt.detail && wallet.value === String(evt.detail.id)) {
+      wallet.value = '';
+      document.getElementById('scope-value').value = 'all';
+      afterFilterChange();
+    }
+    document.body.dispatchEvent(new Event('refreshFeed'));
+  });
+
   document.body.addEventListener('wallet-changed', () => {
     walletDialog.close();
     document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));

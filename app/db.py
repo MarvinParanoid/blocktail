@@ -31,6 +31,19 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _VERSION_RE = re.compile(r"^(\d+)_")
 
 
+# An event is part of what the app shows when at least one end is a watched
+# account. The account columns only ever name *active* accounts (see
+# relink_accounts), so this one test hides a removed wallet's history without
+# deleting any of it.
+_VISIBLE = "(a.from_account_id IS NOT NULL OR a.to_account_id IS NOT NULL)"
+
+
+# The active account with a given (chain, address), or NULL.
+_ACTIVE_ACCOUNT = (
+    "(SELECT id FROM accounts WHERE chain_id = ? AND address = ? AND active = 1)"
+)
+
+
 def _decimals(alias: str) -> str:
     """The believed decimals of an asset, NULL when unknown. Every read goes
     through this, so no caller can mistake "unknown" for zero."""
@@ -170,6 +183,9 @@ class Database:
                 conn.execute("ROLLBACK")
                 raise
 
+        # A wallet dropped from the file loses its history from every view, one
+        # put back regains it — before the first page is served.
+        self.relink_accounts()
         return self.list_accounts()
 
     def list_accounts(self, *, active_only: bool = True) -> list[Account]:
@@ -231,6 +247,10 @@ class Database:
                 conn.execute("ROLLBACK")
                 raise
 
+        # History already indexed — through another wallet, or before this one
+        # was removed — is attributed to it again; the next cycle resumes from
+        # its own watermark for the rest.
+        self.relink_accounts()
         return next(
             account
             for account in self.list_accounts()
@@ -243,8 +263,9 @@ class Database:
         Config-declared accounts are not removable here: the file is their source
         of truth, and the next start would bring them straight back.
 
-        The row is archived rather than deleted, so its activity stays queryable
-        and re-adding the address resumes where it left off.
+        The row is archived rather than deleted, and so is its history: every
+        event stays in the table, unattributed, and re-adding the address
+        attributes it again and resumes indexing where it left off.
         """
         conn = self.connect()
         row = conn.execute(
@@ -254,6 +275,7 @@ class Database:
             return None
         with self._write_lock:
             conn.execute("UPDATE accounts SET active = 0 WHERE id = ?", (account_id,))
+        self.relink_accounts()
         return row["name"]
 
     def mark_synced(self, starts: dict[int, int], head: int) -> None:
@@ -371,23 +393,24 @@ class Database:
                 f"SELECT a.id, a.chain_id, a.contract_address, a.symbol, {_decimals('a')},"
                 "       COUNT(act.id) AS uses"
                 " FROM assets a JOIN activities act ON act.asset_id = a.id"
+                " WHERE act.from_account_id IS NOT NULL OR act.to_account_id IS NOT NULL"
                 " GROUP BY a.id ORDER BY uses DESC, a.symbol"
             )
         )
 
     # ------------------------------------------------------------ activities
 
-    def store_transfers(
-        self,
-        transfers: list[Transfer],
-        account_index: dict[tuple[str, str], int],
-    ) -> int:
+    def store_transfers(self, transfers: list[Transfer]) -> int:
         """Insert transfers idempotently. Returns the number of new rows.
 
         The unique key is ``(chain_id, event_key)``. Because the account columns
         are derived from the addresses rather than from which wallet's scan
         produced the row, the same transfer seen from both sides of a
         wallet-to-wallet transfer collapses to one identical row.
+
+        They are looked up here, against the accounts that are active *now*:
+        a cycle that started before a wallet was removed must not attribute
+        what it stores to that wallet.
         """
         if not transfers:
             return 0
@@ -404,7 +427,8 @@ class Database:
                         "  chain_id, event_key, tx_hash, block_number, block_timestamp,"
                         "  kind, asset_id, amount_raw, from_address, to_address,"
                         "  from_account_id, to_account_id"
-                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                        f"  {_ACTIVE_ACCOUNT}, {_ACTIVE_ACCOUNT})"
                         " ON CONFLICT (chain_id, event_key) DO UPDATE SET"
                         "   from_account_id = excluded.from_account_id,"
                         "   to_account_id   = excluded.to_account_id,"
@@ -421,8 +445,10 @@ class Database:
                             str(transfer.amount_raw),
                             transfer.from_address,
                             transfer.to_address,
-                            account_index.get((transfer.chain_id, transfer.from_address)),
-                            account_index.get((transfer.chain_id, transfer.to_address)),
+                            transfer.chain_id,
+                            transfer.from_address,
+                            transfer.chain_id,
+                            transfer.to_address,
                         ),
                     )
                 inserted = (
@@ -435,11 +461,16 @@ class Database:
         return inserted
 
     def known_event_keys(self, chain_id: str, from_block: int, to_block: int) -> set[str]:
+        """Events in a block range that a re-scan of the *active* accounts is
+        expected to report again. A removed wallet is not scanned, so its
+        events are not candidates for pruning: absent from a scan that never
+        looked is not the same as reorged out."""
         return {
             row[0]
             for row in self.connect().execute(
-                "SELECT event_key FROM activities"
-                " WHERE chain_id = ? AND block_number BETWEEN ? AND ?",
+                "SELECT event_key FROM activities a"
+                " WHERE a.chain_id = ? AND a.block_number BETWEEN ? AND ?"
+                f" AND {_VISIBLE}",
                 (chain_id, from_block, to_block),
             )
         }
@@ -469,22 +500,40 @@ class Database:
         return total
 
     def relink_accounts(self) -> None:
-        """Recompute the account columns on every activity from the current
-        accounts table, so history indexed before a wallet was added is still
-        attributed to it (and history of a removed wallet is released)."""
+        """Point the account columns of every activity at the *active* account
+        with that address, or at nothing.
+
+        This is the one invariant the whole read side relies on: an inactive
+        account is never named on an activity. Its history stays in the table
+        untouched, simply unattributed — so the feed, IN/OUT, the pair
+        collapse and "sent by one of your wallets" all forget it at once, and
+        re-adding the address attributes it again.
+
+        Written as four targeted updates rather than one rewrite of every row:
+        a restart, where nothing changed, touches no rows at all.
+        """
         conn = self.connect()
         with self._write_lock:
             conn.execute("BEGIN")
             try:
-                conn.execute(
-                    "UPDATE activities SET"
-                    "  from_account_id = (SELECT id FROM accounts"
-                    "     WHERE accounts.chain_id = activities.chain_id"
-                    "       AND accounts.address = activities.from_address),"
-                    "  to_account_id = (SELECT id FROM accounts"
-                    "     WHERE accounts.chain_id = activities.chain_id"
-                    "       AND accounts.address = activities.to_address)"
-                )
+                for column, address in (("from_account_id", "from_address"),
+                                        ("to_account_id", "to_address")):
+                    # Release what an inactive account was holding.
+                    conn.execute(
+                        f"UPDATE activities SET {column} = NULL WHERE {column} IN"
+                        " (SELECT id FROM accounts WHERE active = 0)"
+                    )
+                    # Attribute what an active account has not been given yet.
+                    conn.execute(
+                        f"UPDATE activities SET {column} = ("
+                        "   SELECT acc.id FROM accounts acc"
+                        "   WHERE acc.chain_id = activities.chain_id"
+                        f"    AND acc.address = activities.{address} AND acc.active = 1)"
+                        f" WHERE {column} IS NULL AND EXISTS ("
+                        "   SELECT 1 FROM accounts acc"
+                        "   WHERE acc.chain_id = activities.chain_id"
+                        f"    AND acc.address = activities.{address} AND acc.active = 1)"
+                    )
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -554,6 +603,10 @@ class Database:
             where.append("a.to_account_id IS NOT NULL")
         elif direction is Direction.OUT:
             where.append("a.from_account_id IS NOT NULL")
+        else:
+            # Everything monitored means everything an active account is part
+            # of — not every row ever indexed.
+            where.append(_VISIBLE)
 
         if asset_id is not None:
             where.append("a.asset_id = :asset_id")
@@ -650,7 +703,7 @@ class Database:
 
     def get_activity(self, activity_id: int) -> sqlite3.Row | None:
         rows = self.connect().execute(
-            self._ACTIVITY_SELECT + " WHERE a.id = :id", {"id": activity_id}
+            self._ACTIVITY_SELECT + f" WHERE a.id = :id AND {_VISIBLE}", {"id": activity_id}
         ).fetchall()
         return rows[0] if rows else None
 
@@ -666,6 +719,7 @@ class Database:
             self.connect().execute(
                 self._ACTIVITY_SELECT
                 + " WHERE a.chain_id = :chain AND a.tx_hash = :tx"
+                + f" AND {_VISIBLE}"
                 + " ORDER BY a.id",
                 {"chain": chain_id, "tx": tx_hash.lower()},
             )
