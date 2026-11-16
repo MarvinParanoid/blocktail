@@ -360,8 +360,9 @@ def test_removing_tells_the_page_to_drop_the_wallet_from_the_feed(instance):
     client = instance.start()
     temp = add(client, "Temp", TEMP)
     response = client.post(f"/wallets/{temp}/remove", headers=SAME_ORIGIN)
+    # One event, with what happened and to which wallet. The order of what
+    # follows — clear the selection, then the feed, then the summary and the
+    # sidebar — is decided by its one handler on the page (S7), not by the
+    # order of keys in this header.
     trigger = json.loads(response.headers["HX-Trigger"])
-    assert trigger["wallet-removed"] == {"id": temp}
-    assert list(trigger) == ["wallet-removed", "wallet-changed"], (
-        "the selection is cleared before the summary asks for its scope again"
-    )
+    assert trigger == {"wallet-changed": {"action": "removed", "id": temp}}

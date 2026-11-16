@@ -52,6 +52,7 @@ stand and the test fails if one was attempted.
 | No axe-core violations | 1440, 390 (smoke); 1440, 768, 390, 320 × dark, light (`test_accessibility.py`) |
 | Main controls reachable with Tab | 1440 |
 | Keyboard and focus (`test_accessibility.py`, below) | 1440, 768, 390, 320 |
+| Search, filters, wallet events, skip link (`test_interaction.py`, below) | 1440, 768, 390, 320 |
 | Connection status (`test_connection.py`, below) | 1440, 390 |
 | Phones and money (`test_mobile_financial.py`, below) | 1440, 1024, 768, 430, 390, 360, 320 |
 | No JavaScript or console errors, no request leaves the stand | every test |
@@ -128,6 +129,41 @@ zero axe-core violations.
 * **Colour schemes:** the page follows `prefers-color-scheme`; both the dark
   and the light palette meet WCAG AA contrast, and axe runs in both.
 
+### Filters, search and the page's events
+
+`test_interaction.py` holds the page to one way of updating itself.
+
+* **One request path.** Every change of what the feed shows — the filter
+  controls, a wallet or group in the sidebar, an asset in the summary or the
+  holdings sheet, a counterparty in a row, a wallet change — sets the filter
+  form's fields and lets the form ask for `/activity`. Links say what they
+  choose (`data-pick="wallet:3"`, `scope:mine`, `asset:12`, `address:0x…`)
+  and keep a real `href` for a new tab. After the feed is swapped, the address
+  bar is updated and `filtersApplied` (the hidden-transfers note) and
+  `refreshWallets` (sidebar, summary, status bar) follow — once each.
+* **Search** answers `input`, debounced 300 ms: typing, Ctrl+V, the context
+  menu's Paste and the native clear all search; typing a word sends one
+  request.
+* **No stale answers.** The form queues its requests (`hx-sync="this:queue
+  last"` — nothing is aborted, so htmx logs nothing), and a feed response is
+  swapped in only if the filters in its own URL are still the form's. The
+  test holds the first answer back until after the second, and checks the
+  rows answer the second.
+* **Wallet changes are one event.** The server sends `wallet-changed`
+  `{action: added | updated | removed, id}`; its one handler closes the
+  dialog, drops a removed wallet from the scope, then updates the feed and,
+  after it, the rest. The test checks that nothing asks the server about the
+  removed wallet and that each fragment is asked for once.
+* **A link to a removed (or unknown) wallet** says so in the feed, with
+  "Show all activity"; the summary panel falls back to my wallets; the
+  narrow selector reads "Removed wallet", not "All activity". Back and
+  forward through such a link show the same.
+* **Pages loaded by scrolling** survive the status poll and the 15-second
+  refresh (U-12): the test waits through both.
+* **Skip to activity** is the first Tab stop on every width, visible only
+  while focused, and Enter lands on the current row of the feed — also after
+  the feed has been replaced.
+
 ## Known defects
 
 These are open findings from [the audit](audit/product-audit.md). Each is a
@@ -135,14 +171,20 @@ test marked `xfail(strict=True)` with its id: it is expected to fail today,
 and the day the defect is fixed it passes unexpectedly and **fails the run**,
 so the marker is removed together with the defect.
 
+None in the browser tests today. Two are kept in the main suite
+(`tests/test_web.py`), because fixing them changes the search query in
+`app/db.py`, which S7 was not to touch:
+
 | Audit id | Test | What fails |
 | --- | --- | --- |
-| U-10 | `test_pasting_into_search_filters_the_feed[desktop-1440]` | an input with no keyup (a paste) does not search |
+| U-09 | `test_search_finds_built_in_address_names` | "universal router" does not find the router's transfers |
+| — | `test_search_wildcards_are_literal` | `%` and `_` in a search are LIKE wildcards: `_` matches everything |
 
 Fixed and since removed from this list, by the strict markers failing as
 designed: U-03 (overflow at 390 and 320, and the inspector's close button
 pushed off screen by it) and U-02 (the empty holdings sheet), both in S5;
-U-06 (feed rows not reachable by keyboard), in S6.
+U-06 (feed rows not reachable by keyboard), in S6; U-10 (a paste did not
+search), in S7.
 
 Accessibility (U-07) was a baseline of known axe-core rules until S6, which
 fixed them (`color-contrast`, `region`, `empty-table-header`, `select-name`)

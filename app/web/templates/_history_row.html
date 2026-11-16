@@ -9,6 +9,7 @@
 <tr class="row row--older{{ ' is-busy' if h.active }}" id="history-row"
     {%- if h.active %}
     hx-get="{{ poll }}" hx-trigger="every 3s" hx-swap="outerHTML" hx-include="#filters"
+    hx-sync="#filters:drop"
     {%- endif %}>
   <td colspan="7">
     {% if h.active %}

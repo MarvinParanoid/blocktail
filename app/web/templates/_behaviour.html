@@ -60,11 +60,34 @@
     layout.classList.toggle('one-wallet', !!(wallet && wallet.value));
   }
 
-  function afterFilterChange() {
+  // --- how the page updates --------------------------------------------
+  //
+  // One path, in one order, for every change of what the feed shows:
+  //
+  //   1. state     — the form's fields (#wallet-value, #scope-value, asset,
+  //                  direction, search) are set, synchronously;
+  //   2. the feed  — the form asks for /activity (queued, never dropped; an
+  //                  answer to an older question is not swapped in);
+  //   3. after it  — onFiltered() puts the filters in the address bar, then
+  //                  fires `filtersApplied` (the hidden-transfers note) and,
+  //                  unless this was the timed refresh, `refreshWallets`
+  //                  (sidebar, summary, status bar).
+  //
+  // Who starts it:
+  //   * the filter controls themselves (change; search on input, debounced);
+  //   * pick() — a link with data-pick: a wallet, a scope, an asset, an
+  //     address. Its href stays for a new tab and for no script;
+  //   * the server's `wallet-changed` {action, id} — one event, whose
+  //     handler closes the dialog, drops a removed wallet from the scope,
+  //     then applies. Nothing depends on the order of keys in a header;
+  //   * `refreshFeed` — the 15-second refresh, and nothing else.
+  //
+  // `history-loaded` is fired when older history arrives in the feed.
+  function applyFilters(reason) {
     document.body.dataset.paged = '';
     syncActiveFilters();
     syncScopeClass();
-    setTimeout(() => { syncUrl(); document.body.dispatchEvent(new Event('refreshWallets')); }, 0);
+    htmx.trigger(filters, 'filters-changed', { reason: reason || 'filter' });
   }
 
   syncActiveFilters();
@@ -297,6 +320,30 @@
   // A swap replaces the rows. The row that had focus (or the tab stop) is the
   // same activity afterwards, and gets it back — a refresh every fifteen
   // seconds must not throw a keyboard user out of the feed.
+  // An answer to a question that is no longer asked is not shown. The form
+  // queues its requests (hx-sync "queue last": nothing is aborted, so htmx
+  // logs nothing), and a response for the feed is swapped in only if the
+  // filters it answers — read off its own URL — are still the form's. A page
+  // or older history carries the filters too, plus where it continues from.
+  function feedQuestion(search) {
+    const out = [];
+    for (const [key, value] of new URLSearchParams(search)) {
+      if (!value || key === 'before' || key === 'after_day') continue;
+      if ((key === 'scope' || key === 'direction') && value === 'all') continue;
+      out.push(key + '=' + value);
+    }
+    return out.sort().join('&');
+  }
+  document.body.addEventListener('htmx:beforeSwap', (evt) => {
+    const target = evt.detail.target;
+    const config = evt.detail.requestConfig || {};
+    if (!target || !(target === feedBody || feedBody.contains(target))) return;
+    if ((config.verb || '').toLowerCase() !== 'get' || !evt.detail.xhr) return;
+    const asked = feedQuestion(new URL(evt.detail.xhr.responseURL, location.href).search);
+    const now = feedQuestion(new URLSearchParams(new FormData(filters)).toString());
+    if (asked !== now) evt.detail.shouldSwap = false;
+  });
+
   let feedFocus = null;
   document.body.addEventListener('htmx:beforeSwap', (evt) => {
     const target = evt.detail.target;
@@ -342,19 +389,44 @@
   }).observe(feedBody, { childList: true, subtree: true });
   ensureStop();
 
-  // The status bar is replaced every poll, and a keyboard user may be on its
-  // scope button: put focus back on the same control in the new bar.
+  // "Skip to activity": the current row of the feed (its Tab stop), so the
+  // arrows work at once. With no rows — a filter that matches nothing, a
+  // removed wallet — the first control in the feed, or the feed itself.
+  // Looked up on every use: the feed is replaced all the time.
+  document.querySelector('.skip-link').addEventListener('click', (evt) => {
+    evt.preventDefault();
+    ensureStop();
+    const stop = feedBody.querySelector('.row__open[tabindex="0"]');
+    const target = stop && stop.offsetParent !== null ? stop
+      : feedBody.querySelector('a[href], button');
+    if (target) {
+      target.focus();
+    } else {
+      feedBody.tabIndex = -1;
+      feedBody.focus();
+    }
+  });
+
+  // The status bar, the sidebar and the summary are replaced whole — on a
+  // timer, and after every filter or wallet change — and a keyboard user may
+  // be on a control inside one: focus goes back to the same control in the
+  // new one. "The same" is what it picks (data-pick) where it says, else its
+  // first class.
+  const REPLACED_WHOLE = ['topline', 'wallets', 'summary'];
   document.body.addEventListener('htmx:beforeSwap', (evt) => {
     const target = evt.detail.target;
-    if (!target || target.id !== 'topline') return;
+    if (!target || !REPLACED_WHOLE.includes(target.id)) return;
     const focused = document.activeElement;
-    if (focused && target.contains(focused) && focused.classList.length) {
-      const cls = focused.classList[0];
-      setTimeout(() => {
-        const again = document.querySelector('#topline .' + cls);
-        if (again) again.focus();
-      }, 0);
-    }
+    if (!focused || !target.contains(focused)) return;
+    const selector = focused.dataset && focused.dataset.pick
+      ? '[data-pick="' + focused.dataset.pick + '"]'
+      : (focused.classList.length ? '.' + focused.classList[0] : null);
+    if (!selector) return;
+    const id = target.id;
+    setTimeout(() => {
+      const again = document.querySelector('#' + id + ' ' + selector);
+      if (again && document.activeElement === document.body) again.focus();
+    }, 0);
   });
 
   // --- wallet dialog -----------------------------------------------------
@@ -405,22 +477,22 @@
     walletDialog.close();
   }
 
-  // The server signals a successful change; nothing needs to parse the response.
-  // A removed wallet's history leaves the feed now, not on the next refresh,
-  // and a feed scoped to that wallet goes back to everything.
-  document.body.addEventListener('wallet-removed', (evt) => {
+  // The server says what changed — {action: added | updated | removed, id} —
+  // and this decides the order: the dialog and menus that made the change
+  // close; a removed wallet stops being the scope, before anything asks the
+  // server about it; then the feed, and after it everything else (see
+  // applyFilters). A removed wallet's rows leave the feed now, and a feed
+  // scoped to it goes back to everything.
+  document.body.addEventListener('wallet-changed', (evt) => {
+    const { action, id } = evt.detail || {};
+    if (walletDialog.open) walletDialog.close();
+    document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));
     const wallet = document.getElementById('wallet-value');
-    if (wallet && evt.detail && wallet.value === String(evt.detail.id)) {
+    if (action === 'removed' && wallet.value === String(id)) {
       wallet.value = '';
       document.getElementById('scope-value').value = 'all';
-      afterFilterChange();
     }
-    document.body.dispatchEvent(new Event('refreshFeed'));
-  });
-
-  document.body.addEventListener('wallet-changed', () => {
-    walletDialog.close();
-    document.querySelectorAll('.wallet__menu[open]').forEach((m) => (m.open = false));
+    applyFilters('wallet');
   });
 
   // navigator.clipboard needs a secure context. Over plain HTTP it simply is
@@ -450,13 +522,14 @@
     }
   });
 
-  // A timed sidebar refresh must not yank an open menu away mid-click.
+  // A timed sidebar refresh must not yank an open menu away mid-click. One
+  // that follows a wallet change carries {force: true} and always goes.
   document.body.addEventListener('htmx:beforeRequest', (evt) => {
     const trigger = evt.detail.requestConfig && evt.detail.requestConfig.triggeringEvent;
     if (evt.detail.elt && evt.detail.elt.id === 'wallets'
         && (document.querySelector('.wallet__menu[open]')
             || document.documentElement.classList.contains('scope-open'))
-        && (!trigger || trigger.type !== 'wallet-changed')) {
+        && !(trigger && trigger.detail && trigger.detail.force)) {
       evt.preventDefault();
     }
   });
@@ -491,7 +564,7 @@
     const had = !!box.value;
     box.value = '';
     toggleSearch(false);
-    if (had) { htmx.trigger(box, 'change'); afterFilterChange(); }
+    if (had) applyFilters('filter');
   }
 
   function toggleSummary() {
@@ -517,23 +590,55 @@
       filters.appendChild(field);
     }
     field.value = show ? 'show' : '';
-    document.body.dataset.paged = '';
-    htmx.trigger(filters, 'change');
+    applyFilters('filter');
   }
 
-  function filterByAsset(id) {
+  // A link that narrows the feed — a wallet or a group in the sidebar, an
+  // asset in the summary or the holdings sheet, a counterparty in a row —
+  // says what it chooses in data-pick ("wallet:3", "scope:mine",
+  // "asset:12", "address:0x…"). Its choice goes into the form and through
+  // applyFilters like any other filter. Wired once, on the document, so it
+  // holds for every fragment however often it is replaced. A modified click
+  // or a middle click keeps the href and opens a new tab.
+  function pick(kind, value) {
+    const wallet = document.getElementById('wallet-value');
+    const scope = document.getElementById('scope-value');
     const asset = filters.querySelector('select[name="asset"]');
-    if (asset) asset.value = id;
-    afterFilterChange();
+    if (kind === 'wallet') {
+      wallet.value = value;
+      scope.value = 'all';
+    } else if (kind === 'scope') {
+      wallet.value = '';
+      scope.value = value;
+    } else if (kind === 'asset') {
+      if (asset) asset.value = value;
+    } else if (kind === 'address') {
+      // "What have my wallets ever done with this address?" — every other
+      // filter gets out of the way.
+      wallet.value = '';
+      scope.value = 'all';
+      document.getElementById('search').value = value;
+      if (asset) asset.value = '';
+      const all = filters.querySelector('.segment--all input');
+      if (all) all.checked = true;
+    } else {
+      return;
+    }
+    closeScopeSheet();
+    if (walletDialog.open) walletDialog.close();
+    applyFilters('pick');
   }
 
-  // The sidebar is the scope control; these carry its choice into the form.
-  function selectWallet(id) {
-    document.getElementById('wallet-value').value = id;
-    document.getElementById('scope-value').value = 'all';
-    closeScopeSheet();
-    afterFilterChange();
-  }
+  document.addEventListener('click', (evt) => {
+    const link = evt.target.closest && evt.target.closest('a[data-pick]');
+    if (!link || evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey) {
+      return;
+    }
+    evt.preventDefault();
+    const spec = link.dataset.pick;
+    const at = spec.indexOf(':');
+    pick(spec.slice(0, at), spec.slice(at + 1));
+  });
 
   // A swap replaces every <tr>, so the marker on the open row has to be put
   // back — otherwise the inspector points at a row that no longer looks open.
@@ -545,27 +650,10 @@
     if (id) document.querySelector('.row[data-activity="' + id + '"]')?.classList.add('is-open');
   });
 
-  function selectScope(scope) {
-    document.getElementById('wallet-value').value = '';
-    document.getElementById('scope-value').value = scope;
-    closeScopeSheet();
-    afterFilterChange();
-  }
-
-  // Clicking a counterparty asks "what have my wallets ever done with this
-  // address?", so every other filter gets out of the way.
-  function filterByAddress(address) {
-    document.getElementById('wallet-value').value = '';
-    document.getElementById('scope-value').value = 'all';
-    document.getElementById('search').value = address;
-    const asset = filters.querySelector('select[name="asset"]');
-    if (asset) asset.value = '';
-    const all = filters.querySelector('.segment--all input');
-    if (all) all.checked = true;
-    afterFilterChange();
-  }
-
   function onFiltered(evt) {
+    // An aborted request (a newer one replaced it) or a failed one changed
+    // nothing on the page, so nothing follows from it.
+    if (!evt.detail.successful) return;
     syncUrl();
     syncActiveFilters();
     // Anything outside the swapped feed that depends on the filters — the line
@@ -573,7 +661,8 @@
     document.body.dispatchEvent(new Event('filtersApplied'));
     const trigger = evt.detail.requestConfig && evt.detail.requestConfig.triggeringEvent;
     if (!trigger || trigger.type !== 'refreshFeed') {
-      document.body.dispatchEvent(new Event('refreshWallets'));
+      const force = !!(trigger && trigger.detail && trigger.detail.reason === 'wallet');
+      document.body.dispatchEvent(new CustomEvent('refreshWallets', { detail: { force } }));
     }
   }
 
@@ -595,10 +684,20 @@
     return !!(trigger && trigger.type === 'refreshFeed');
   }
 
-  document.body.addEventListener('htmx:configRequest', (evt) => {
-    const source = evt.detail.elt;
-    if (source && source.id !== 'feed-more' && !isAutoRefresh(evt.detail)) {
-      document.body.dataset.paged = '';
+  // Rows loaded below the first page — by scrolling, or older history once
+  // it arrives — are kept from the timed refresh (U-12). Read off the
+  // request that brought them: the sentinel that asked is gone by now, and
+  // a status poll in between says nothing about the feed. The flag is
+  // cleared only by applyFilters, when the question itself changes.
+  document.body.addEventListener('htmx:afterSwap', (evt) => {
+    const config = evt.detail.requestConfig || {};
+    const path = config.path || '';
+    if (path.startsWith('/activity') && /[?&]before=/.test(path)) {
+      document.body.dataset.paged = '1';
+    } else if (path.startsWith('/history/older') && evt.detail.xhr
+               && !/row--older is-busy/.test(evt.detail.xhr.responseText)) {
+      document.body.dataset.paged = '1';
+      document.body.dispatchEvent(new Event('history-loaded'));
     }
   });
 

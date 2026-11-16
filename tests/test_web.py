@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import time
@@ -446,8 +447,8 @@ def test_the_two_groups_contrast_without_echoing_the_summary(mixed_client):
     headings = re.findall(r'class="wallets__group[^"]*"[^>]*>\s*<span>([^<]+)</span>', body)
 
     assert headings == ["All activity", "My wallets", "Watching"]
-    assert 'hx-get="/activity?scope=mine"' in body
-    assert 'hx-get="/activity?scope=watched"' in body
+    assert 'data-pick="scope:mine"' in body
+    assert 'data-pick="scope:watched"' in body
     assert body.index("My wallets") < body.index(">Main</span>") < body.index("Watching")
 
 
@@ -461,7 +462,7 @@ def test_a_selected_group_offers_the_way_back(mixed_client):
     narrowed = mixed_client.get("/wallets", params={"scope": "watched"}).text
     active = re.search(r'<a class="wallets__group is-selected".*?</a>', narrowed, re.S).group(0)
     assert "wallets__clear" in active
-    assert 'href="?"' in active and 'hx-get="/activity"' in active, "back to everything"
+    assert 'href="?"' in active and 'data-pick="scope:all"' in active, "back to everything"
 
 
 def test_sidebar_highlights_the_selected_wallet(client):
@@ -523,8 +524,7 @@ def test_counterparty_filters_the_feed_and_offers_the_explorer_separately(client
     row = re.search(r'<tr class="row row--in".*?</tr>', client.get("/").text, re.S).group(0)
     cell = re.search(r'<td class="cell-party">.*?</td>', row, re.S).group(0)
 
-    assert 'hx-get="/activity?q=0x' in cell, "the name filters the feed"
-    assert 'filterByAddress(' in cell
+    assert 'href="?q=0x' in cell and 'data-pick="address:0x' in cell, "the name filters the feed"
     assert 'class="ext"' in cell and "etherscan.io/address/" in cell, "the explorer is a separate icon"
 
 
@@ -604,8 +604,7 @@ def test_dust_is_hidden_but_reachable(client):
 
 def test_a_holding_click_filters_the_feed_by_that_asset(client):
     body = client.get("/summary").text
-    assert 'hx-get="/activity?asset=' in body
-    assert "filterByAsset(" in body
+    assert 'data-pick="asset:' in body
 
     usdc = next(row["id"] for row in client.ctx.db.feed_assets() if row["symbol"] == "USDC")
     feed = client.get("/activity", params={"asset": usdc}).text
@@ -644,13 +643,14 @@ def test_valuation_absent_is_stated_not_faked(settings, watch_config, provider, 
 
 def test_scope_links_do_not_inherit_a_stale_wallet_value(client):
     """The wallets section sets hx-include so its polling carries the current
-    scope. htmx inherits that down to the links inside it, where it would append
-    the value as it was *before* the click and override the scope in the link's
-    own URL — so each link cancels the inheritance."""
+    scope. A link that sent its own request would inherit that and send the
+    value as it was *before* the click. Since S7 the links send nothing: they
+    say what they choose (data-pick) and the filter form asks."""
     body = client.get("/wallets").text
-
-    for link in re.findall(r'<a class="wallet(?:-all|__hit)[^"]*"[^>]*>', body):
-        assert 'hx-include="this"' in link, link
+    links = re.findall(r'<a class="(?:wallets__group|wallet__hit)[^"]*"[^>]*>', body)
+    assert links
+    for link in links:
+        assert "hx-get" not in link and "data-pick=" in link, link
 
 
 def test_a_holding_keeps_the_current_scope(client):
@@ -658,7 +658,10 @@ def test_a_holding_keeps_the_current_scope(client):
     back to every account, so it carries the scope along."""
     body = client.get("/summary").text
     link = re.search(r'<a class="holding__hit"[^>]*>', body).group(0)
-    assert 'hx-include="#wallet-value, #scope-value"' in link
+    # It narrows through the filter form, which carries the scope fields.
+    assert "hx-get" not in link and 'data-pick="asset:' in link
+    form = re.search(r'<form id="filters".*?</form>', client.get("/").text, re.S).group(0)
+    assert 'id="wallet-value"' in form and 'id="scope-value"' in form
 
 
 def test_the_summary_names_its_scope(client):
@@ -878,8 +881,9 @@ def test_a_wallet_can_be_added_from_the_page(client):
     )
 
     assert response.status_code == 200
-    assert response.headers["hx-trigger"] == "wallet-changed", "the dialog closes on this"
     added = next(a for a in client.ctx.db.list_accounts() if a.name == "Whale #1")
+    assert json.loads(response.headers["hx-trigger"]) == {
+        "wallet-changed": {"action": "added", "id": added.id}}, "the dialog closes on this"
     assert added.is_owned is True and added.source == "ui"
     assert ">Whale #1</span>" in client.get("/wallets").text
 
@@ -1710,7 +1714,7 @@ def test_the_hidden_count_refreshes_with_the_filters(dusty_client):
     count was also wrong after switching wallets."""
     note = dusty_client.get("/dust-note").text
     assert "2 noisy transfers hidden" in note
-    assert 'hx-trigger="filtersApplied from:body"' in note
+    assert "filtersApplied from:body" in note
 
     shown = dusty_client.get("/dust-note", params={"dust": "show"}).text
     assert "Showing dust and unverified" in shown and "hidden" not in shown
@@ -2135,7 +2139,7 @@ def test_the_scope_class_is_kept_in_step_with_the_feed(client):
     behaviour = client.get("/").text
 
     assert "function syncScopeClass()" in behaviour
-    assert "syncScopeClass();" in behaviour.split("function afterFilterChange")[1]
+    assert "syncScopeClass();" in behaviour.split("function applyFilters")[1]
 
 
 def test_a_transfer_between_your_wallets_spans_two_columns(client):
@@ -2293,3 +2297,111 @@ def test_a_fresh_wallet_form_marks_nothing_invalid(client):
     body = client.get("/wallets/form").text
     assert "aria-invalid" not in body
     assert "autofocus" in _field(body, "name")
+
+
+# ------------------------------------------------------------------ S7
+
+SAME_SITE = {"sec-fetch-site": "same-origin"}
+
+
+def _add_and_remove(client, name="Whale") -> int:
+    client.post("/wallets", data={"name": name, "address": STRANGER, "chain": "ethereum"},
+                headers=SAME_SITE)
+    account = next(a for a in client.ctx.db.list_accounts() if a.name == name)
+    client.post(f"/wallets/{account.id}/remove", headers=SAME_SITE)
+    return account.id
+
+
+def test_a_wallet_change_is_one_event_with_its_action(client):
+    """The order of a page's updates after a wallet change is decided in one
+    handler on the page, not by the order of keys in a JSON header."""
+    added = client.post("/wallets", data={"name": "Whale", "address": STRANGER,
+                                          "chain": "ethereum"}, headers=SAME_SITE)
+    whale = next(a for a in client.ctx.db.list_accounts() if a.name == "Whale")
+    assert json.loads(added.headers["HX-Trigger"]) == {
+        "wallet-changed": {"action": "added", "id": whale.id}}
+
+    renamed = client.post(f"/wallets/{whale.id}", data={"name": "Whale 2"}, headers=SAME_SITE)
+    assert json.loads(renamed.headers["HX-Trigger"]) == {
+        "wallet-changed": {"action": "updated", "id": whale.id}}
+
+    removed = client.post(f"/wallets/{whale.id}/remove", headers=SAME_SITE)
+    assert json.loads(removed.headers["HX-Trigger"]) == {
+        "wallet-changed": {"action": "removed", "id": whale.id}}
+
+
+@pytest.mark.parametrize("path", ["/", "/activity"])
+def test_a_link_to_a_removed_wallet_says_so(client, path):
+    removed = _add_and_remove(client)
+    body = client.get(path, params={"wallet": removed}).text
+    assert 'class="scope-missing"' in body
+    assert "Whale" in body and "no longer watched" in body
+    assert 'href="?"' in body, "a way back to all activity"
+    assert not re.search(r'<tr[^>]*data-activity="\d', body), "none of its activity"
+
+
+def test_a_link_to_an_unknown_wallet_says_so(client):
+    body = client.get("/", params={"wallet": 987654}).text
+    assert 'class="scope-missing"' in body and "not found" in body
+    assert ">All activity</span>" not in re.search(
+        r'class="topline__scope.*?</button>', body, re.S).group(0), \
+        "the narrow selector does not pretend this is everything"
+
+
+def test_a_watched_wallet_has_no_missing_notice(client):
+    main = next(a for a in client.ctx.db.list_accounts() if a.address.lower() == MAIN.lower())
+    assert 'class="scope-missing"' not in client.get("/", params={"wallet": main.id}).text
+
+
+# U-09 and LIKE escaping belong to S7 in the roadmap, but both change the
+# search query in app/db.py, which S7 was told not to touch. They stay here as
+# known defects until that is allowed.
+
+@pytest.mark.xfail(strict=True, reason="known defect U-09: search ignores built-in names")
+def test_search_finds_built_in_address_names(settings, watch_config, provider, prices,
+                                             sample_transfers):
+    router = "0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD"
+    provider.transfers = [*sample_transfers, transfer(
+        "to-router", sender=MAIN, recipient=router, amount=10**17, block=21_000_045)]
+    app = create_app(settings=settings, config=watch_config, provider=provider,
+                     price_source=prices, run_indexer=False)
+    with TestClient(app) as client:
+        run(app.state.ctx.indexer.run_once())
+        by_address = client.get("/activity", params={"q": router.lower()}).text
+        assert tx_hash_in(by_address, "to-router"), "the transfer is indexed"
+        body = client.get("/activity", params={"q": "universal router"}).text
+        assert tx_hash_in(body, "to-router")
+
+
+@pytest.mark.xfail(strict=True, reason="known defect: % and _ are LIKE wildcards in search")
+def test_search_wildcards_are_literal(client):
+    everything = client.get("/activity").text.count('data-activity="')
+    assert everything > 0
+    assert client.get("/activity", params={"q": "_"}).text.count('data-activity="') == 0
+    assert client.get("/activity", params={"q": "%"}).text.count('data-activity="') == 0
+
+
+def tx_hash_in(body: str, seed: str) -> bool:
+    from tests.conftest import tx_hash
+    return tx_hash(seed) in body
+
+
+def test_the_form_carries_show_dust_from_the_address(client):
+    """Opened with ?dust=show, the next request the form makes — a filter or
+    the timed refresh — must still ask for it."""
+    form = re.search(r'<form id="filters".*?</form>', client.get("/?dust=show").text, re.S).group(0)
+    assert re.search(r'<input type="hidden" name="dust" value="show">', form)
+
+
+def test_the_panel_for_a_removed_wallet_totals_my_wallets(client):
+    """Not an empty panel reading "no valuation yet", as if something were
+    on its way: the wallet is gone, so the panel shows what it shows with
+    nothing selected — my wallets."""
+    removed = _add_and_remove(client)
+    mine = client.get("/summary").text
+    for path in ("/summary", "/holdings"):
+        body = client.get(path, params={"wallet": removed}).text
+        assert "no valuation yet" not in body, path
+    total = re.search(r'class="figure__main[^"]*"[^>]*>([^<]+)<', mine).group(1)
+    assert total in client.get("/summary", params={"wallet": removed}).text
+    assert total in client.get("/", params={"wallet": removed}).text

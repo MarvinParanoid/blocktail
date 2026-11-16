@@ -165,12 +165,42 @@ def _scope_ids(ctx, filters: Filters) -> set[int] | None:
 SCOPE_LABELS = {Scope.ALL: "All activity", Scope.OWNED: "My wallets", Scope.WATCHED: "Watching"}
 
 
+def _missing_wallet(ctx, filters: Filters) -> dict | None:
+    """The wallet a link asks for, when it is not watched: removed here (it
+    keeps its name, archived), or an id that never was. ``None`` when nothing
+    is asked for or the wallet is watched.
+
+    Nothing about what the feed holds changes — a removed wallet's activity is
+    already out of every view (S2) — only what the page says about it."""
+    if filters.account_id is None:
+        return None
+    account = next(
+        (a for a in ctx.db.list_accounts(active_only=False) if a.id == filters.account_id),
+        None,
+    )
+    if account is not None and account.active:
+        return None
+    return {"id": filters.account_id, "name": account.name if account else None}
+
+
+def _panel_wallet(ctx, filters: Filters) -> int | None:
+    """The wallet the summary panel totals: the selected one while it is
+    watched. A link to one that is not falls back to what the panel shows with
+    nothing selected — my wallets — rather than an empty panel that reads
+    "no valuation yet", as if something were on its way."""
+    return None if _missing_wallet(ctx, filters) else filters.account_id
+
+
 def _scope_label(ctx, filters: Filters) -> str:
     """What the feed is currently showing, for the narrow-screen selector."""
     if filters.account_id is not None:
         account = next((a for a in ctx.db.list_accounts() if a.id == filters.account_id), None)
         if account is not None:
             return account.name
+        # Not "All activity": the feed is empty because the wallet is gone,
+        # not because everything is quiet.
+        return "Removed wallet" if _missing_wallet(ctx, filters) and _missing_wallet(
+            ctx, filters)["name"] else "Unknown wallet"
     return SCOPE_LABELS[filters.scope]
 
 
@@ -380,9 +410,9 @@ def index(
             **_sidebar_context(ctx, wallet, scope),
             "summary": _summary(ctx),
             "scope_label": _scope_label(ctx, filters),
-            "scope_is_panel": filters.account_id is not None,
+            "scope_is_panel": _panel_wallet(ctx, filters) is not None,
             "portfolio": _portfolio(
-                ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
+                ctx, _panel_wallet(ctx, filters), watched_scope=filters.scope is Scope.WATCHED
             ),
             "prices_on": ctx.price_source is not None,
             "assets": _feed_assets(ctx),
@@ -391,6 +421,7 @@ def index(
             "next_cursor": next_cursor,
             "previous_day": None,
             "filters": filters,
+            "missing_wallet": _missing_wallet(ctx, filters),
             "status": _status_view(ctx),
             "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
             "older_days": ctx.settings.backfill_days,
@@ -427,6 +458,7 @@ def activity_fragment(
             # previous page ended on, so the sentinel passes that day back.
             "previous_day": (after_day or "")[:10] or None,
             "filters": filters,
+            "missing_wallet": _missing_wallet(ctx, filters),
             "is_page": filters.cursor is not None,
             "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
             "older_days": ctx.settings.backfill_days,
@@ -646,9 +678,18 @@ def wallets_fragment(
 
 
 def _form_response(request, ctx, *, account=None, form=None, error=None, status=200,
-                   field=None):
+                   field=None, changed: tuple[str, int] | None = None):
     """``field`` names the input the error is about ("name", "address",
-    "chain"): it is marked invalid, tied to the message and given focus."""
+    "chain"): it is marked invalid, tied to the message and given focus.
+
+    ``changed`` is (action, account id) after a successful change, sent to the
+    page as one event, ``wallet-changed`` {action, id}, whose handler decides
+    the order of what follows (see applyFilters in _behaviour.html)."""
+    headers = None
+    if changed is not None and not error:
+        action, account_id = changed
+        headers = {"HX-Trigger": json.dumps(
+            {"wallet-changed": {"action": action, "id": account_id}})}
     return templates.TemplateResponse(
         request,
         "_wallet_form.html",
@@ -661,7 +702,7 @@ def _form_response(request, ctx, *, account=None, form=None, error=None, status=
             "chain": ctx.chain,
         },
         status_code=status,
-        headers=None if error else {"HX-Trigger": "wallet-changed"},
+        headers=headers,
     )
 
 
@@ -732,7 +773,7 @@ def add_wallet(
                               field="address")
 
     log.info("added account %s (%s) via the UI", added.name, added.address)
-    return _form_response(request, ctx)
+    return _form_response(request, ctx, changed=("added", added.id))
 
 
 @router.post("/wallets/{account_id}", response_class=HTMLResponse)
@@ -777,7 +818,7 @@ def edit_wallet(
             )
 
     log.info("updated account %s", account.name)
-    return _form_response(request, ctx)
+    return _form_response(request, ctx, changed=("updated", account_id))
 
 
 @router.post("/wallets/{account_id}/remove", response_class=HTMLResponse)
@@ -800,15 +841,9 @@ def remove_wallet(request: Request, account_id: int):
             status=422,
         )
     log.info("stopped watching account %s", removed)
-    response = _form_response(request, ctx)
     # The feed on screen still holds the removed wallet's rows, and may be
     # scoped to it: the page drops both at once rather than on its next timer.
-    # htmx fires these in order, and "removed" must clear the selection before
-    # "changed" makes the summary and the sidebar ask for the scope again.
-    response.headers["HX-Trigger"] = json.dumps(
-        {"wallet-removed": {"id": account_id}, "wallet-changed": None}
-    )
-    return response
+    return _form_response(request, ctx, changed=("removed", account_id))
 
 
 @router.get("/summary", response_class=HTMLResponse)
@@ -829,10 +864,10 @@ def summary_fragment(
         "_summary.html",
         {
             "portfolio": _portfolio(
-                ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
+                ctx, _panel_wallet(ctx, filters), watched_scope=filters.scope is Scope.WATCHED
             ),
             "scope_label": _scope_label(ctx, filters),
-            "scope_is_panel": filters.account_id is not None,
+            "scope_is_panel": _panel_wallet(ctx, filters) is not None,
             "prices_on": ctx.price_source is not None,
         },
     )
@@ -856,7 +891,7 @@ def holdings_sheet(
         "_holdings.html",
         {
             "portfolio": _portfolio(
-                ctx, filters.account_id, watched_scope=filters.scope is Scope.WATCHED
+                ctx, _panel_wallet(ctx, filters), watched_scope=filters.scope is Scope.WATCHED
             )
         },
     )

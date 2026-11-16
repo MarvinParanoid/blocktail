@@ -2,6 +2,9 @@
 {% block title %}blocktail{% endblock %}
 
 {% block content %}
+{# The first Tab stop: past the status bar, the summary, the sidebar and the
+   filters, straight to the current row of the feed. #}
+<a class="skip-link" href="#feed-body">Skip to activity</a>
 <div class="scrim" onclick="closeSheets()" hidden></div>
 
 <div class="app">
@@ -29,9 +32,21 @@
   </section>
 
   <section class="feed-panel">
+    {# The one way the feed is asked for again: every filter, the sidebar, the
+       summary, a counterparty and a wallet change come through this form (see
+       pick() and applyFilters() in _behaviour.html), so the address bar and the
+       hidden-transfers note follow all of them.
+
+       Search answers `input` — typing, a paste by key or by menu, the native
+       clear — once it pauses for 300 ms; its own `change` on blur is not a new
+       question. hx-sync "queue last": while one request is in flight the
+       newest question waits its turn (none is dropped, none aborted), and an
+       answer to a question no longer asked is not swapped in (feedQuestion in
+       _behaviour.html). #}
     <form id="filters" class="filters"
           hx-get="/activity" hx-target="#feed-body" hx-swap="innerHTML"
-          hx-trigger="change, keyup changed delay:300ms from:#search, refreshFeed from:body"
+          hx-trigger="change[event.target.id !== 'search'], input changed delay:300ms from:#search, filters-changed, refreshFeed from:body"
+          hx-sync="this:queue last"
           hx-indicator="#topline" hx-on::after-request="onFiltered(event)"
           onsubmit="return false">
 
@@ -39,6 +54,9 @@
          is that control, and these carry its choice into the form. #}
       <input type="hidden" name="wallet" id="wallet-value" value="{{ filters.account_id or '' }}">
       <input type="hidden" name="scope" id="scope-value" value="{{ filters.scope.value }}">
+      {# Rendered, not only added by toggleDust(): a page opened with ?dust=show
+         has to keep it on the next filter change and the timed refresh. #}
+      <input type="hidden" name="dust" value="{{ 'show' if filters.show_dust else '' }}">
 
       <fieldset class="field field--dir">
         <span class="field__label">Direction</span>

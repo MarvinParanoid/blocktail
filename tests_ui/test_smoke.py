@@ -143,8 +143,9 @@ def test_search_and_filters(session, viewport):
 
 
 @viewports(DESKTOP)
-@known("U-10", "search reacts to keyup only; pasted text does nothing until blur")
 def test_pasting_into_search_filters_the_feed(session, viewport):
+    """U-10, fixed in S7: search answers `input`, not only keyup.
+    test_interaction.py covers Ctrl+V, the context menu and the clear."""
     page = session.open("/")
     before = rows(page).count()
     page.locator("#search").fill("Binance")   # an input event with no keyup, as a paste

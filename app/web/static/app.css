@@ -109,6 +109,24 @@ a.sym:hover { color: var(--accent); }
   clip-path: inset(50%); white-space: nowrap;
 }
 
+/* Off screen until it has focus — the first Tab on the page — then a plain
+   chip over the top-left corner. Fixed, so it takes no room in any layout. */
+.skip-link {
+  position: fixed;
+  top: 6px;
+  left: 6px;
+  z-index: 100;
+  padding: 6px 10px;
+  background: var(--panel);
+  color: var(--text-hi);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font: 12px var(--sans);
+  text-decoration: none;
+  transform: translateY(calc(-100% - 12px));
+}
+.skip-link:focus { transform: none; }
+
 /* ------------------------------------------------------------------ topbar */
 
 .topbar {
@@ -884,6 +902,17 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 .segment input:focus-visible + span { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 /* Dust: hidden by default, and said so rather than simply absent. */
+/* A link to a wallet that is no longer watched: said in the feed, where the
+   rows would be, with the way back. */
+.scope-missing {
+  margin: 0;
+  padding: 14px 4px;
+  color: var(--text);
+  line-height: 1.6;
+}
+.scope-missing strong { color: var(--text-hi); font-weight: 600; }
+.scope-missing a { margin-left: 6px; color: var(--accent); }
+
 .dust-note {
   display: flex;
   align-items: baseline;
