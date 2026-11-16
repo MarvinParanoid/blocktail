@@ -42,8 +42,9 @@
     {% endif %}
 
     <td class="cell-value">
-      <span class="amount">{{ activity.amount_text }}</span
+      <span class="amount"{% if activity.raw_units %} title="Decimals unknown: raw on-chain units, not valued"{% endif %}>{{ activity.amount_text }}</span
       >{% if activity.asset_url %}<a class="sym" href="{{ activity.asset_url }}" target="_blank" rel="noopener noreferrer">{{ activity.symbol }}</a>{% else %}<span class="sym">{{ activity.symbol }}</span>{% endif -%}
+      {%- if activity.raw_units %}<span class="kind" title="Decimals unknown: raw on-chain units, not valued">raw</span>{% endif %}
       {%- if activity.kind_badge %}<span class="kind" title="Internal transfer — value moved by contract execution">{{ activity.kind_badge }}</span>{% endif %}
       {%- if activity.value_text %}<span class="fiat">{{ activity.value_text }}</span>{% endif %}
     </td>

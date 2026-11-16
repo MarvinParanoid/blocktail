@@ -317,11 +317,10 @@ a.sym:hover { color: var(--accent); }
 .holding--native .holding__sym::before { content: "\25c8"; color: var(--own); }
 .holding__amount { text-align: right; color: var(--text-hi); }
 .holding__value { text-align: right; color: var(--muted); min-width: 5em; }
-.holding--excluded .holding__value {
-  color: var(--warn);
-  text-decoration: line-through;
-  text-decoration-color: var(--border-hi);
-}
+/* The quote is not shown at all: a struck-through figure still prints the
+   number the total refused to believe. The word says why the cell is empty. */
+.holding--excluded .holding__value { color: var(--warn); }
+.holding--excluded .holding__amount { color: var(--muted); }
 /* Hidden holdings stay in the document: this is a monitor, and the real
    on-chain state must be one click away rather than gone. */
 .holding--hidden { display: none; }

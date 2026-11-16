@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from datetime import datetime
 
 import httpx
 
 from app.chains.ethereum.chain import ZERO_ADDRESS, EthereumChain
+from app.chains.ethereum.known_assets import KNOWN_TOKENS, listed_decimals
 from app.models import NATIVE, AssetRef, Balance, TransactionCost, Transfer, TransferKind
 from app.redact import describe_failure, is_access_denied
 
@@ -32,6 +34,17 @@ _THROTTLED = frozenset({403, 429})
 
 class ProviderError(RuntimeError):
     """The upstream chain data provider could not satisfy a request."""
+
+
+def _stub(contract_address: str) -> str:
+    return f"{contract_address[:6]}…{contract_address[-4:]}"
+
+
+def _valid_decimals(value: object) -> int | None:
+    """Decimals an ERC-20 can actually have (a uint8), or ``None``."""
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 255:
+        return value
+    return None
 
 
 def _hex_to_int(value: str | int | None) -> int | None:
@@ -66,6 +79,7 @@ class AlchemyProvider:
         max_retries: int = 5,
         max_concurrency: int = 2,
         max_token_lookups: int = 200,
+        metadata_retry_seconds: float = 300.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._url = url
@@ -75,7 +89,12 @@ class AlchemyProvider:
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._request_id = 0
+        # A successful lookup is kept for the life of the process: a token does
+        # not change its decimals. A failed one only for a while — kept forever,
+        # one bad minute at the provider used to fix a token's size at zero.
         self._token_metadata: dict[str, tuple[str, int]] = {}
+        self._metadata_failures: dict[str, tuple[float, str]] = {}
+        self._metadata_retry_seconds = metadata_retry_seconds
         self._token_metadata_locks: dict[str, asyncio.Lock] = {}
         self._native = AssetRef(
             chain_id=self.chain_id,
@@ -310,8 +329,13 @@ class AlchemyProvider:
             contract_address = (contract.get("address") or "").lower()
             if not contract_address:
                 return None
-            decimals = _hex_to_int(contract.get("decimal"))
+            decimals = _valid_decimals(_hex_to_int(contract.get("decimal")))
             symbol = raw.get("asset")
+            listed = listed_decimals(contract_address)
+            if listed is not None:
+                # The reviewed list wins over whatever this response says.
+                decimals = listed
+                symbol = symbol or KNOWN_TOKENS.get(contract_address)
             if decimals is None or not symbol:
                 symbol, decimals = await self._token_meta(contract_address)
             asset = AssetRef(self.chain_id, contract_address, symbol, decimals)
@@ -335,19 +359,38 @@ class AlchemyProvider:
             amount_raw=amount_raw,
         )
 
-    async def _token_meta(self, contract_address: str) -> tuple[str, int]:
-        """Symbol and decimals for a token, cached for the process lifetime."""
-        if cached := self._token_metadata.get(contract_address):
+    async def _token_meta(self, contract_address: str) -> tuple[str, int | None]:
+        """Symbol and decimals for a token; ``None`` decimals means unknown.
+
+        Believed in this order: the vendored token list, which a person
+        reviewed and which cannot have a bad minute; a lookup that succeeded;
+        and only then the provider, asked again once a failure is older than
+        ``metadata_retry_seconds``. Unknown is never reported as zero — zero
+        decimals values a raw amount as whole tokens.
+        """
+        listed = listed_decimals(contract_address)
+        if listed is not None:
+            return KNOWN_TOKENS.get(contract_address) or _stub(contract_address), listed
+        if cached := self._cached_meta(contract_address):
             return cached
 
         lock = self._token_metadata_locks.setdefault(contract_address, asyncio.Lock())
         async with lock:
-            if cached := self._token_metadata.get(contract_address):
+            if cached := self._cached_meta(contract_address):
                 return cached
             return await self._fetch_token_meta(contract_address)
 
-    async def _fetch_token_meta(self, contract_address: str) -> tuple[str, int]:
-        symbol, decimals = "", 0
+    def _cached_meta(self, contract_address: str) -> tuple[str, int | None] | None:
+        if known := self._token_metadata.get(contract_address):
+            return known
+        if failure := self._metadata_failures.get(contract_address):
+            failed_at, symbol = failure
+            if time.monotonic() - failed_at < self._metadata_retry_seconds:
+                return symbol, None
+        return None
+
+    async def _fetch_token_meta(self, contract_address: str) -> tuple[str, int | None]:
+        symbol, decimals = "", None
         try:
             result = await self._rpc("alchemy_getTokenMetadata", [contract_address])
         except ProviderError as exc:
@@ -356,13 +399,15 @@ class AlchemyProvider:
 
         if isinstance(result, dict):
             symbol = (result.get("symbol") or "").strip()
-            decimals = result.get("decimals") if isinstance(result.get("decimals"), int) else 0
+            decimals = _valid_decimals(result.get("decimals"))
 
-        if not symbol:
-            # Unknown token: show a stub rather than an empty column. decimals=0
-            # means the raw integer amount is displayed, which is honest.
-            symbol = f"{contract_address[:6]}…{contract_address[-4:]}"
+        # Unknown token: a stub rather than an empty column.
+        symbol = symbol or _stub(contract_address)
+        if decimals is None:
+            self._metadata_failures[contract_address] = (time.monotonic(), symbol)
+            return symbol, None
 
+        self._metadata_failures.pop(contract_address, None)
         self._token_metadata[contract_address] = (symbol, decimals)
         return symbol, decimals
 

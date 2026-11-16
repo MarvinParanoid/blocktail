@@ -6,14 +6,13 @@
 
   <ul class="holdings holdings--all">
     {% for asset in portfolio.assets %}
-      <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--muted' if asset.hidden }}">
+      <li class="holding{{ ' holding--native' if asset.is_native }}{{ ' holding--excluded' if asset.excluded }}{{ ' holding--muted' if asset.hidden }}">
         <a class="holding__hit" href="?asset={{ asset.asset_id }}"
            hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
            hx-include="#wallet-value, #scope-value"
            hx-on:click="filterByAsset('{{ asset.asset_id }}'); closeWalletDialog()">
           <span class="holding__sym">{{ asset.symbol }}</span>
-          <span class="holding__amount num">{{ asset.amount_text }}</span>
-          <span class="holding__value num">{{ asset.value_text or '' }}</span>
+          {% include "_holding_figures.html" %}
         </a>
       </li>
     {% endfor %}

@@ -18,6 +18,9 @@ from tests.conftest import run
 TX = "0x3847245c01829b043431067fb2bfa95f7b5bdc7e4246c843e7a573ab6f26f5ff"
 USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 WALLET = "0x28c6c06298d514db089934071355e5743bf21d60"
+# In no token list: its metadata has to come from the provider. (USDC is in the
+# vendored list, whose decimals are believed without a lookup.)
+UNLISTED = "0x00000000000000000000000000000000000c0ffe"
 
 
 def make_provider(handler, **kwargs) -> AlchemyProvider:
@@ -180,7 +183,11 @@ def test_null_recipient_is_kept_as_an_empty_address():
 
 def test_token_metadata_fallback_is_cached():
     calls: list[str] = []
-    no_meta = {**ERC20, "asset": None, "rawContract": {**ERC20["rawContract"], "decimal": None}}
+    no_meta = {
+        **ERC20,
+        "asset": None,
+        "rawContract": {**ERC20["rawContract"], "address": UNLISTED, "decimal": None},
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -200,7 +207,11 @@ def test_token_metadata_fallback_is_cached():
 
 
 def test_unknown_token_gets_a_readable_stub():
-    no_meta = {**ERC20, "asset": None, "rawContract": {**ERC20["rawContract"], "decimal": None}}
+    no_meta = {
+        **ERC20,
+        "asset": None,
+        "rawContract": {**ERC20["rawContract"], "address": UNLISTED, "decimal": None},
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         if json.loads(request.content)["method"] == "alchemy_getTokenMetadata":
@@ -209,7 +220,8 @@ def test_unknown_token_gets_a_readable_stub():
 
     provider = make_provider(handler)
     transfers = run(provider.get_transfers(WALLET, outgoing=True, from_block=0, to_block=1))
-    assert transfers[0].asset.symbol.startswith("0xa0b8")
+    assert transfers[0].asset.symbol.startswith("0x0000")
+    assert transfers[0].asset.decimals is None, "unknown, not zero"
     run(provider.close())
 
 
@@ -341,8 +353,8 @@ def test_the_same_token_is_looked_up_once_even_when_asked_at_once():
             {
                 "address": WALLET,
                 "tokenBalances": [
-                    {"contractAddress": USDC, "tokenBalance": "0x1"},
-                    {"contractAddress": USDC, "tokenBalance": "0x2"},
+                    {"contractAddress": UNLISTED, "tokenBalance": "0x1"},
+                    {"contractAddress": UNLISTED, "tokenBalance": "0x2"},
                 ],
             }
         )

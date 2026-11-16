@@ -29,6 +29,7 @@ from app.web.format import (
     build_status,
     build_transaction,
     group_by_transaction,
+    group_verdicts,
     build_summary,
     build_wallets,
     format_amount,
@@ -187,7 +188,8 @@ def _dust_thresholds(ctx) -> dict[int, float]:
     decimals = {row["id"]: row["decimals"] for row in ctx.db.feed_assets()}
     for asset_id, row in ctx.db.prices_by_asset().items():
         price = Decimal(row["price"])
-        if price <= 0 or asset_id not in decimals:
+        # Unknown decimals give no size to compare a price against.
+        if price <= 0 or decimals.get(asset_id) is None:
             continue
         thresholds[asset_id] = float((ceiling / price) * (Decimal(10) ** decimals[asset_id]))
     return thresholds
@@ -234,7 +236,8 @@ def _load_page(ctx, filters: Filters) -> tuple[list, str | None]:
     has_more = len(rows) > PAGE_SIZE
     rows = rows[:PAGE_SIZE]
     prices = ctx.db.prices_by_asset()
-    activities = [build_activity(row, ctx.chain, scope, prices) for row in rows]
+    excluded = _excluded_assets(ctx)
+    activities = [build_activity(row, ctx.chain, scope, prices, excluded) for row in rows]
     # The cursor comes from the query's order, not the display order: grouping
     # moves rows within a transaction, and paging from a moved row would skip
     # or repeat whatever sat between.
@@ -263,6 +266,21 @@ def _wallet_views(ctx, selected_id: int | None = None):
         relevance=_relevance(ctx),
         max_share=ctx.settings.value_max_share,
     )
+
+
+def _excluded_assets(ctx) -> frozenset[int]:
+    """Assets whose quote is not believed: excluded from a portfolio total in
+    either group, or carrying a forged ticker. A feed row or the inspector must
+    not print the value the total was protected from."""
+    rules = _relevance(ctx)
+    verdicts = group_verdicts(
+        ctx.db.list_accounts(),
+        ctx.db.balances_by_account(),
+        ctx.db.prices_by_asset(),
+        rules,
+        ctx.settings.value_max_share,
+    )
+    return verdicts[True].excluded | verdicts[False].excluded | rules.impostor_asset_ids
 
 
 def _relevance(ctx) -> Relevance:
@@ -482,6 +500,7 @@ async def transaction_inspector(request: Request, activity_id: int):
                 head_block=status.head_block,
                 cost=await _transaction_cost(ctx, row["tx_hash"]),
                 native_price=_native_price(ctx, prices),
+                excluded=_excluded_assets(ctx),
             )
         },
     )

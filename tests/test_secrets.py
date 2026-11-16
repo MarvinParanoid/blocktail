@@ -17,7 +17,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.chains.ethereum.alchemy import AlchemyProvider, build_url
+from app.chains.ethereum.alchemy import AlchemyProvider, ProviderError, build_url
 from app.main import create_app
 from app.models import Balance
 from app.prices import AlchemyPrices
@@ -225,7 +225,9 @@ def test_a_failing_metadata_lookup_does_not_log_the_key(debug_log):
     def handler(request):
         if b"alchemy_getTokenBalances" in request.content:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {
-                "tokenBalances": [{"contractAddress": USDC.contract_address, "tokenBalance": "0x1"}]
+                # Not a listed token: a listed one needs no lookup to fail.
+                "tokenBalances": [{"contractAddress": "0x" + "c0ffee" * 6 + "c0ff",
+                                   "tokenBalance": "0x1"}]
             }})
         return httpx.Response(404)
 
@@ -394,7 +396,7 @@ def test_healthz_stays_200_while_the_provider_rejects_the_key(tmp_path, auth):
     orchestrator restart a container that is serving fine."""
     overrides = {"auth_user": "admin", "auth_password": "correct horse"} if auth else {}
     provider = alchemy(lambda request: httpx.Response(401))
-    app, client = run_failing_cycle(tmp_path, provider, **overrides)
+    _, client = run_failing_cycle(tmp_path, provider, **overrides)
     try:
         health = client.get("/healthz")
         assert health.status_code == 200
@@ -425,7 +427,7 @@ AUTH_403_BODIES = [
 def test_a_401_is_not_retried():
     handler, calls = counting(lambda request: httpx.Response(401, json={"error": "no"}))
     provider = alchemy(handler, max_retries=4)
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(ProviderError) as caught:
         run(provider.get_head_block())
     run(provider.close())
     assert calls["n"] == 1, "a rejected key does not get better by asking again"
@@ -436,7 +438,7 @@ def test_a_401_is_not_retried():
 def test_a_403_that_says_access_is_denied_is_not_retried(body):
     handler, calls = counting(lambda request: httpx.Response(403, json=body))
     provider = alchemy(handler, max_retries=4)
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(ProviderError) as caught:
         run(provider.get_head_block())
     run(provider.close())
     assert calls["n"] == 1
@@ -461,7 +463,7 @@ def test_a_throttling_403_is_still_retried(response, monkeypatch):
     monkeypatch.setattr(module.asyncio, "sleep", no_wait)
     handler, calls = counting(lambda request: response)
     provider = alchemy(handler, max_retries=3)
-    with pytest.raises(Exception):
+    with pytest.raises(ProviderError):
         run(provider.get_head_block())
     run(provider.close())
     assert calls["n"] == 3
@@ -485,6 +487,7 @@ def test_the_price_source_does_not_retry_a_denial(status, body):
 
 def test_the_price_source_still_retries_a_temporary_failure(monkeypatch):
     import app.prices as module
+    from app.prices import PriceError
 
     async def no_wait(_):
         return None
@@ -495,7 +498,7 @@ def test_the_price_source_still_retries_a_temporary_failure(monkeypatch):
         KEY, base_url=PRICES_BASE, max_retries=3,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    with pytest.raises(Exception):
+    with pytest.raises(PriceError):
         run(prices._request("GET", "/tokens/by-symbol"))
     run(prices.close())
     assert calls["n"] == 3

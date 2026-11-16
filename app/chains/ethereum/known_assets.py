@@ -61,7 +61,12 @@ CURATED: dict[str, str] = {
 _LIST_PATH = Path(__file__).with_name("tokenlist.json")
 
 
-def _vendored_tokens() -> dict[str, str]:
+# The chain the vendored list must describe. A list for another chain would
+# carry other contracts' decimals at addresses that may exist here too.
+_MAINNET_CHAIN_ID = 1
+
+
+def _load_list() -> dict:
     """The token list as shipped. Read once, at import.
 
     A missing or unreadable file is not fatal: the curated floor still covers
@@ -72,15 +77,48 @@ def _vendored_tokens() -> dict[str, str]:
         document = json.loads(_LIST_PATH.read_text())
     except (OSError, ValueError):
         return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _vendored_tokens(document: dict | None = None) -> dict[str, str]:
+    document = _load_list() if document is None else document
     return {
         address.lower(): entry["symbol"]
-        for address, entry in document.get("tokens", {}).items()
+        for address, entry in (document.get("tokens") or {}).items()
         if isinstance(entry, dict) and entry.get("symbol")
     }
 
 
+def _vendored_decimals(document: dict | None = None) -> dict[str, int]:
+    """Decimals the vendored list states, keyed by exact contract address.
+
+    The list is a trust input that someone reviewed as a diff, which makes it
+    a better source for a listed token's decimals than a metadata call that
+    can fail — and a failed call is how 1 WBTC once became 10^8 WBTC. Only a
+    list for this chain is believed, and only a value an ERC-20 can hold.
+    """
+    document = _load_list() if document is None else document
+    if document.get("chainId") != _MAINNET_CHAIN_ID:
+        return {}
+    decimals: dict[str, int] = {}
+    for address, entry in (document.get("tokens") or {}).items():
+        value = entry.get("decimals") if isinstance(entry, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 255:
+            decimals[address.lower()] = value
+    return decimals
+
+
+_LIST = _load_list()
+TOKEN_DECIMALS: dict[str, int] = _vendored_decimals(_LIST)
+
+
+def listed_decimals(contract_address: str) -> int | None:
+    """The decimals the vendored list gives this exact contract, if any."""
+    return TOKEN_DECIMALS.get(contract_address.lower())
+
+
 # Curated last: a name we have chosen deliberately wins over a list's.
-KNOWN_TOKENS: dict[str, str] = {**_vendored_tokens(), **CURATED}
+KNOWN_TOKENS: dict[str, str] = {**_vendored_tokens(_LIST), **CURATED}
 
 
 def is_native(contract_address: str) -> bool:

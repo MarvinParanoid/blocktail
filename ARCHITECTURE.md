@@ -144,9 +144,14 @@ honestly claim:
 5. **NFTs are out of scope**; `erc721`/`erc1155` categories are not requested.
 6. **`value` is a float and is never used.** Amounts come from
    `rawContract.value` (hex) plus `decimals`, as exact integers.
-7. **Token metadata can be missing.** When a token reports no symbol, the feed
-   shows a truncated contract address and `decimals = 0`, so the raw integer
-   amount is displayed rather than a wrong one.
+7. **Token metadata can be missing.** A token in the vendored list takes its
+   decimals from the list, with no lookup. For any other token a failed or
+   empty lookup leaves the decimals *unknown* — never 0, which would read a raw
+   amount as whole tokens. Such an amount is shown as raw units, marked `raw`,
+   and is never valued. The failure is retried after a few minutes rather than
+   remembered for the life of the process, and a value learned later replaces
+   the unknown one in the database. A stub (a truncated contract address)
+   stands in for a missing symbol.
 8. **Vendor coupling is confined to one file.** `AlchemyProvider` is the only
    module that knows Alchemy exists; a second implementation of
    `ChainDataProvider` would need no changes elsewhere.
@@ -347,8 +352,18 @@ Two guards exist because live mainnet data demanded them, not by anticipation:
   guard excluded a wallet's USDC because it was 99% of that wallet — which is
   what a stablecoin wallet looks like, and the cure was worse than the disease.
   A token that is known, vouched for in the config, or has been sent by one of
-  your own wallets is never called implausible. The sidebar and the summary run
-  the same rule, so one wallet never carries two different totals.
+  your own wallets is never called implausible. Its quote is not printed
+  anywhere — not in the holdings, not on a feed row, not in the inspector — and
+  neither is the quote of a forged ticker: printing either would hand back the
+  number the total refused.
+
+* **One valuation, judged once per group.** Which assets count — hidden as
+  dust or as unverified, excluded as implausible — is decided once over all of
+  my wallets (and separately over the watched ones), then applied to every
+  view: the panel, one wallet, the sidebar rows. So the wallets add up to the
+  total above them, and one wallet never carries two different totals. What
+  is hidden or excluded is never summed; revealing hidden tokens changes what
+  is listed, not the total.
 
 Where valuation stops is deliberate: there is no cost basis, no profit and loss,
 no 24-hour change and no price history. Each of those needs a methodology —
