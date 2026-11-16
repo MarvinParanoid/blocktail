@@ -1,7 +1,11 @@
 services:
   blocktail:
     build: .
-    image: blocktail:0.1.0
+    # Locally `docker compose up -d --build` builds blocktail:local. On the
+    # server scripts/remote-deploy.sh builds blocktail:<commit> and pins it in
+    # docker-compose.override.yml, so a plain `up -d` there runs what was
+    # deployed and the previous image stays available for a rollback.
+    image: blocktail:${BLOCKTAIL_TAG:-local}
     container_name: blocktail
     restart: unless-stopped
     env_file: .env

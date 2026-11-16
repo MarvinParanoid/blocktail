@@ -360,16 +360,30 @@ Indexed history lives in the `blocktail-data` named volume, mounted at `/data`.
 It survives `docker compose down`, image rebuilds and container restarts; only
 `docker compose down -v` destroys it. Restarting never duplicates events.
 
-To back up:
+Schema changes ship as migrations and are applied on start. The database is
+never recreated, and migrations only move forward.
+
+### Deploying updates
+
+`scripts/deploy.sh` ships the committed `HEAD` — never the working tree — after
+running the tests and lint on exactly what it ships. On the server it builds an
+image tagged with the commit, keeps the running one as `blocktail:previous`,
+backs up SQLite with its online backup API (verified, last five kept), starts
+the new image and waits for `/healthz`. It refuses a dirty tree, failing tests
+and a failed backup, and there is no switch to skip a check.
 
 ```bash
-docker compose exec blocktail python -c \
-  "import sqlite3; sqlite3.connect('/data/blocktail.db').backup(sqlite3.connect('/data/backup.db'))"
-docker compose cp blocktail:/data/backup.db ./blocktail-backup.db
+scripts/deploy.sh --check-only   # everything except sending
+scripts/deploy.sh
 ```
 
-Schema changes ship as migrations and are applied on start, so upgrading is
-`git pull && docker compose up -d --build`. The database is never recreated.
+Backups, restoring the database, rolling back the application — and why a
+rollback after a migration needs a decision rather than a command — are in
+[docs/operations.md](docs/operations.md).
+
+On a single machine without the script, upgrading is still
+`git pull && docker compose up -d --build`; take a backup first (the commands
+are in the same document).
 
 ### Keeping the token list current
 
