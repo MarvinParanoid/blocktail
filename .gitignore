@@ -14,3 +14,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+
+# Browser smoke test artifacts (screenshots, traces, logs of failed tests)
+tests_ui/artifacts/

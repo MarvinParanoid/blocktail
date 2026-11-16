@@ -1,0 +1,3 @@
+# The browser smoke tests (tests_ui/). Not needed to run or deploy the app.
+# After installing: python -m playwright install --only-shell chromium
+playwright==1.65.2
