@@ -449,6 +449,15 @@ function showWalletDialog() {
   }
 }
 
+// htmx wires up swapped-in attributes when it settles, ~20 ms after the swap,
+// and the dialog is on screen and focused before that. A form that is not yet
+// wired up posts natively on Enter, and the page becomes the bare fragment.
+// So whatever lands in the dialog is wired up at once; the settle-time pass
+// then finds it done.
+document.body.addEventListener('htmx:afterSwap', (evt) => {
+  if (walletDialog.contains(evt.detail.target)) htmx.process(evt.detail.target);
+});
+
 // A refused form comes back with the field at fault marked [autofocus]
 // (U-11). htmx does not focus it in a swapped fragment, so this does —
 // otherwise focus falls to <body> and the keyboard user is lost.

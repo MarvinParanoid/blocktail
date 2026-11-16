@@ -444,3 +444,62 @@ def test_the_focused_skip_link_passes_axe(session, viewport, scheme):
     page.keyboard.press("Tab")
     found = run_axe(page)
     assert not found, session.where(f"{scheme}: {found}")
+
+
+# ------------------------------------- the wallet form, from its first moment
+
+# The earliest Enter there is: the form is submitted the moment the dialog is
+# shown — with its fields filled, as Rename's already are. htmx wires up a
+# swapped-in form when it settles (~20 ms later), and an unwired form posts
+# natively: the page becomes the bare fragment the server answers with.
+SUBMIT_ON_OPEN = """
+const show = HTMLDialogElement.prototype.showModal;
+HTMLDialogElement.prototype.showModal = function () {
+  const result = show.apply(this, arguments);
+  const form = this.querySelector('form');
+  if (window.__submitOnOpen && form) {
+    window.__submitOnOpen = false;
+    for (const [name, value] of Object.entries(window.__fill || {})) {
+      const field = form.querySelector('[name="' + name + '"]');
+      if (field) field.value = value;
+    }
+    form.requestSubmit();
+  }
+  return result;
+};
+"""
+
+
+def submit_on_open(page, **fill):
+    page.evaluate("(fill) => { window.__fill = fill; window.__submitOnOpen = true; }", fill)
+
+
+@viewports(DESKTOP)
+def test_the_wallet_form_submitted_the_moment_it_opens_goes_through_htmx(fresh_session,
+                                                                         viewport):
+    session = fresh_session
+    session.context.add_init_script(SUBMIT_ON_OPEN)
+    page = session.open("/")
+    sent = []
+    page.on("request", lambda r: sent.append((r.method, r.url, r.headers.get("hx-request")))
+            if r.method == "POST" else None)
+
+    submit_on_open(page, name="Early", address=REMOVABLE)
+    page.locator(".add-wallet-link").click()
+    page.wait_for_function("() => !document.getElementById('wallet-dialog')?.open")
+    settle(page, 800)
+    assert page.locator("#wallet-dialog").count() == 1, session.where(
+        f"the page was replaced by the fragment: {page.url}")
+    assert page.locator(".wallet__name", has_text="Early").count() == 1
+    assert sent and all(hx == "true" for _, _, hx in sent), session.where(f"posts: {sent}")
+
+    # Rename: the name is already there, so Enter at once is a real thing to do.
+    sent.clear()
+    submit_on_open(page, name="Renamed early")
+    page.locator('summary[aria-label="Actions for Early"]').click()
+    page.locator(".wallet__menu[open] button", has_text="Rename").click()
+    page.wait_for_function("() => !document.getElementById('wallet-dialog')?.open")
+    settle(page, 800)
+    assert page.locator("#wallet-dialog").count() == 1, session.where(page.url)
+    assert page.locator(".wallet__name", has_text="Renamed early").count() == 1
+    assert sent and all(hx == "true" for _, _, hx in sent), session.where(f"posts: {sent}")
