@@ -265,8 +265,13 @@ backup_database() {  # <image> <label> <protect substring or empty>
 }
 
 newest_backup_from() {  # <version>
-  # shellcheck disable=SC2012
-  ls -1 "$REMOTE/backups" 2>/dev/null | grep -F -- "-from-$1.db" | sort | tail -n 1 || true
+  # Names start with a UTC timestamp, so the last match in glob order is the
+  # newest. A backup still being written is a dotfile (.partial-…): not matched.
+  local path newest=""
+  for path in "$REMOTE/backups"/*"-from-$1.db"; do
+    [ -f "$path" ] && newest="${path##*/}"
+  done
+  [ -z "$newest" ] || printf '%s\n' "$newest"
 }
 
 # ------------------------------------------------------------------ deploy
