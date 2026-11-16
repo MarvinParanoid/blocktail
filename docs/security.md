@@ -72,11 +72,17 @@ account of where a request came from decides (`write_refusal`):
    this app answers no preflight.
 3. Neither → 403. An old browser posting a form from another site looks
    exactly like this, and so does a request with only `Origin` or `Referer`.
+4. Whatever the rest says, an `Origin` that is sent must not be `null` (a
+   sandboxed frame, a `data:` URL), and once `ALLOWED_HOSTS` is set it must
+   name one of the listed hosts, on any scheme or port. A browser on this page
+   always sends its public name, so `Sec-Fetch-Site: same-origin` with a
+   foreign `Origin` is something no browser on this page sends (S8b).
 
-`Sec-Fetch-Site` is a forbidden header: no page can set or remove it. Neither
-check reads `Host`, `Origin` or `X-Forwarded-*`, so a proxy that rewrites Host
-(nginx's default `proxy_set_header Host $proxy_host`) cannot make the page's
-own requests look foreign. Nothing is stored, issued or signed: there is no
+`Sec-Fetch-Site` is a forbidden header: no page can set or remove it. No check
+reads `Host` or `X-Forwarded-*`, and `Origin` is compared with the configured
+list, never with Host, so a proxy that rewrites Host (nginx's default
+`proxy_set_header Host $proxy_host`) cannot make the page's own requests look
+foreign. Nothing is stored, issued or signed: there is no
 token to leak into a URL, a page, a log or an error.
 
 A script that writes (curl, a cron job) sends `-H 'HX-Request: true'` along
@@ -152,23 +158,29 @@ them (`app/auth.py`, unchanged in S8a). Wrong or missing → 401 with
   app builds no absolute URL and no redirect from it (`redirect_slashes` is
   off — that redirect was the one place Host was reflected). Set
   `ALLOWED_HOSTS=watch.example.com` and any other name is answered 400 — the
-  defence against DNS rebinding for an instance without auth. `localhost`,
-  `127.0.0.1` and `[::1]` are always accepted: the container healthcheck asks
-  by address, and a rebinding site's requests carry its own name.
-  `*.example.com` matches subdomains.
+  defence against DNS rebinding for an instance without auth. `*.example.com`
+  matches subdomains. The one exception is the container healthcheck: a
+  loopback Host (`localhost`, `127.0.0.1`, `[::1]`) is accepted for `/healthz`
+  only, and only from a loopback client — inside the container. The page, the
+  API and every write answer 400 to a loopback Host, from anywhere; so does
+  `/healthz` asked from outside with one (a proxy forwarding whatever Host a
+  client sent). docker-compose.yml requires the list (S8b).
 * **Proxy headers.** The app reads no `X-Forwarded-*` or `Forwarded` header,
-  and nothing it decides depends on scheme or client address. uvicorn's own
-  default (`--proxy-headers`, trusted from `FORWARDED_ALLOW_IPS`, by default
-  `127.0.0.1` only) affects at most the client address in its access log.
+  and nothing it decides depends on scheme or client address. The image runs
+  uvicorn with `--no-proxy-headers`, so uvicorn does not trust them either:
+  its access log shows the proxy's address, and the client address the
+  healthcheck exception looks at cannot be forged with a header.
 * **HTTP and HTTPS.** The app behaves the same on both. The clipboard API
   needs a secure context, so over plain HTTP "Copy address" shows the address
   to copy by hand.
 
 ## Open decisions
 
-* `ALLOWED_HOSTS` is empty by default, so an existing deployment keeps
-  working. An instance reachable without auth should set it.
-* HSTS belongs in the proxy config once its HTTPS is confirmed.
+* `ALLOWED_HOSTS` is empty by default in the app (running it by hand or in
+  tests serves any Host); docker-compose.yml, the production path, refuses to
+  start without it, and the deploy script checks it first.
+* HSTS belongs in the proxy config once its HTTPS is confirmed — see
+  [production.md](production.md).
 * A browser without fetch metadata (Safari before 16.4, Chrome before 76,
   Firefox before 90) cannot post a plain form without script; with script,
   htmx sends `HX-Request` and everything works.

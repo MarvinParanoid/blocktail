@@ -382,7 +382,15 @@ def pinned(tmp_path, watch_config, provider, prices, sample_transfers):
                   allowed_hosts=("watch.example.com",))
     with TestClient(app, base_url="http://watch.example.com",
                     raise_server_exceptions=False) as test_client:
+        test_client.app_under_test = app
         yield test_client
+
+
+def from_inside(client) -> TestClient:
+    """The same app, asked from 127.0.0.1 — as the container's own healthcheck
+    asks it (a proxy on the host reaches the container from the bridge)."""
+    return TestClient(client.app_under_test, base_url="http://127.0.0.1:8000",
+                      client=("127.0.0.1", 41234), raise_server_exceptions=False)
 
 
 def test_with_allowed_hosts_set_another_host_is_refused(pinned):
@@ -396,12 +404,91 @@ def test_with_allowed_hosts_set_another_host_is_refused(pinned):
     assert response.headers.get("cache-control") == "no-store"
 
 
-def test_with_allowed_hosts_set_the_listed_host_and_loopback_are_served(pinned):
+def test_with_allowed_hosts_set_the_listed_host_is_served(pinned):
     assert pinned.get("/").status_code == 200
     assert pinned.get("/", headers={"host": "WATCH.example.com:443"}).status_code == 200
-    # The container healthcheck asks 127.0.0.1 directly.
-    assert pinned.get("/healthz", headers={"host": "127.0.0.1:8000"}).status_code == 200
-    assert pinned.get("/healthz", headers={"host": "localhost"}).status_code == 200
+
+
+def test_the_healthcheck_from_inside_the_container_is_served(pinned):
+    inside = from_inside(pinned)
+    for host in ("127.0.0.1:8000", "localhost", "[::1]:8000"):
+        assert inside.get("/healthz", headers={"host": host}).status_code == 200, host
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.1:8000", "localhost", "[::1]"])
+def test_a_loopback_host_opens_nothing_but_the_healthcheck(pinned, host):
+    """The exception exists for the healthcheck: not for the page, the API or
+    a write — not even from 127.0.0.1 itself — and not for /healthz asked
+    from outside (a proxy that forwards whatever Host the client sent)."""
+    inside = from_inside(pinned)
+    for path in ("/", "/api/status", "/activity", "/static/app.css"):
+        assert inside.get(path, headers={"host": host}).status_code == 400, path
+        assert pinned.get(path, headers={"host": host}).status_code == 400, path
+    assert inside.post("/history/older", headers={"host": host, **HTMX}).status_code == 400
+    assert pinned.get("/healthz", headers={"host": host}).status_code == 400
+
+
+def test_behind_a_proxy_that_keeps_host_the_public_name_is_served(pinned):
+    """Caddy's default, and nginx with `proxy_set_header Host $host`."""
+    headers = {"host": "watch.example.com", "x-forwarded-for": "203.0.113.9",
+               "x-forwarded-proto": "https"}
+    assert pinned.get("/", headers=headers).status_code == 200
+    assert pinned.post("/history/older", headers={
+        **HTMX, **headers, "origin": "https://watch.example.com"}).status_code == 200
+
+
+def test_behind_a_proxy_that_rewrites_host_nothing_is_served(pinned):
+    """nginx's default sends its upstream address as Host: refused, plainly,
+    and X-Forwarded-Host does not talk the app round — it reads no proxy
+    header. The fix is in the proxy (docs/production.md)."""
+    response = pinned.get("/", headers={"host": "127.0.0.1:8000",
+                                        "x-forwarded-host": "watch.example.com"})
+    assert response.status_code == 400
+    assert response.text == "Unknown host."
+
+
+@pytest.mark.parametrize("path", ["/nope", "/tx/x", "/wallets/1/remove", "/"])
+def test_a_refused_or_failed_answer_reflects_no_host(pinned, path):
+    for host in ("evil.example", "watch.example.com\r\nX-Injected: 1"):
+        response = pinned.get(path, headers={"host": host}, follow_redirects=False)
+        assert "evil" not in response.text and "Injected" not in response.text
+        assert "evil" not in str(response.headers) and "x-injected" not in response.headers
+        assert "location" not in response.headers
+
+
+# ------------------------------------------- Sec-Fetch-Site and Origin together
+
+
+@pytest.mark.parametrize("site, origin", [
+    ("same-origin", "null"),                        # a sandboxed frame
+    ("same-origin", "https://evil.example"),        # nothing a browser would send
+    ("none", "https://evil.example"),
+    (None, "https://evil.example"),                 # an old browser, or a forger
+    ("same-origin", "http://localhost:8000"),       # loopback is not a public name
+])
+def test_with_allowed_hosts_an_origin_that_is_not_listed_is_refused(pinned, site, origin):
+    headers = {"hx-request": "true", "origin": origin}
+    if site:
+        headers["sec-fetch-site"] = site
+    before = pinned.get("/api/status").json()["history"]
+    assert pinned.post("/history/older", headers=headers).status_code == 403
+    assert pinned.get("/api/status").json()["history"] == before
+
+
+def test_with_allowed_hosts_a_listed_origin_on_any_port_or_scheme_is_taken(pinned):
+    for origin in ("https://watch.example.com", "http://WATCH.example.com:8443"):
+        response = pinned.post("/history/older", headers={**HTMX, "origin": origin})
+        assert response.status_code == 200, origin
+
+
+def test_a_null_origin_is_refused_even_from_the_same_origin(client):
+    assert post(client, "older history", {**HTMX, "origin": "null"}).status_code == 403
+
+
+def test_without_allowed_hosts_a_proxy_rewriting_host_still_works(client):
+    """Unchanged from S8a: with no list, Origin is not compared with Host."""
+    headers = {**HTMX, "origin": "https://watch.example.com", "host": "127.0.0.1:8000"}
+    assert post(client, "older history", headers).status_code == 200
 
 
 def test_a_host_header_is_never_reflected(client):
