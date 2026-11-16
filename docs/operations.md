@@ -261,6 +261,16 @@ migration:
   forward again would then trust it.
 * A changed or removed table may stop the older version from starting at all.
 
+CI checks the first and the last of these for every change against main, the
+release production runs (the `rollback` job): `tests/test_rollback.py` runs
+main's code on a synthetic database this change has migrated — every read
+compared with the same read before the migration, and wallets added, renamed
+and removed — and `scripts/rollback-smoke.sh` makes a legacy server out of
+main's image and compose, deploys this change onto it with this script, rolls
+back to the baseline under the new compose, and deploys again. The second
+point is not checked: it shows only on a forward deploy after a rollback in
+which the older code met a token whose lookup failed.
+
 So after a failed deploy that included a migration:
 
 1. Roll back the application (above) and look at the page and the logs.

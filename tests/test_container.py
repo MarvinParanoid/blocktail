@@ -242,6 +242,30 @@ def test_ci_runs_the_checks_this_project_relies_on():
     assert "pip-audit" in runs["audit"]
 
 
+def test_ci_rolls_back_to_what_production_runs():
+    """The previous release (main) on this one's database, and the first
+    deploy onto a legacy server and back, for real (tests/test_rollback.py,
+    scripts/rollback-smoke.sh). The base is required there, not skipped."""
+    job = WORKFLOWS["tests.yml"]["jobs"]["rollback"]
+    checkout = [s for s in job["steps"] if "actions/checkout" in s.get("uses", "")][0]
+    assert checkout["with"]["fetch-depth"] == 0, "the previous release is in the history"
+    steps = {s.get("run", ""): s for s in job["steps"]}
+    test = next(s for run, s in steps.items() if "tests/test_rollback.py" in run)
+    assert test["env"]["BLOCKTAIL_ROLLBACK_REQUIRED"] == "1"
+    assert test["env"]["BLOCKTAIL_ROLLBACK_BASE"]
+    assert any(run.startswith("scripts/rollback-smoke.sh") for run in steps)
+
+
+def test_the_rollback_smoke_runs_the_server_half_on_this_machine_only():
+    """It calls remote-deploy.sh against a directory it made, never a host."""
+    script = (ROOT / "scripts" / "rollback-smoke.sh").read_text()
+    for word in ("ssh", "scripts/deploy.sh", "BLOCKTAIL_HOST", "docker push", "docker login",
+                 "docker pull"):
+        assert word not in script, word
+    assert 'WORK="$(mktemp -d)"' in script and 'REMOTE="$WORK/' in script
+    assert 'BLOCKTAIL_REMOTE="$REMOTE"' in script
+
+
 def test_dependencies_are_watched():
     config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text())
     ecosystems = {u["package-ecosystem"] for u in config["updates"]}

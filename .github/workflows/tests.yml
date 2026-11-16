@@ -103,6 +103,34 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The way back. `remote-deploy.sh rollback` starts the previous image and
+  # does not restore the database, so the previous release must run on the
+  # database this one leaves: its own code on a migrated synthetic database,
+  # and its image under this compose after a real first deploy onto a legacy
+  # server and a rollback (scripts/rollback-smoke.sh: local Docker, a
+  # directory it made, no host). The previous release is main — on main
+  # itself, the main before this push.
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BLOCKTAIL_ROLLBACK_BASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'HEAD^1' || 'origin/main' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests/test_rollback.py
+        env:
+          BLOCKTAIL_ROLLBACK_BASE: ${{ env.BLOCKTAIL_ROLLBACK_BASE }}
+          BLOCKTAIL_ROLLBACK_REQUIRED: "1"
+      - run: scripts/rollback-smoke.sh "$BLOCKTAIL_ROLLBACK_BASE"
+
   # The image as it ships, run the way docker-compose.yml runs it.
   image:
     runs-on: ubuntu-latest
