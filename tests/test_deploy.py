@@ -313,9 +313,13 @@ exec bash -c "$1"
 # thing a test can check for real: the backup, by running sqlite_backup.py on
 # the host with the container paths mapped to directories under the stand.
 FAKE_DOCKER = r'''#!/usr/bin/env python3
-import hashlib, json, os, subprocess, sys
+import fcntl, hashlib, json, os, subprocess, sys, time
 STATE = os.environ["FAKE_DOCKER_STATE"]
 DATA = os.environ["FAKE_DOCKER_DATA"]   # what the data volume holds
+CALLER = os.environ.get("FAKE_CALLER", "-")
+
+guard = open(STATE + ".lock", "w")
+fcntl.flock(guard, fcntl.LOCK_EX)       # the double's own bookkeeping, nothing more
 
 def load():
     try:
@@ -326,7 +330,7 @@ def load():
 def save(s):
     json.dump(s, open(STATE, "w"), indent=1)
 
-s = load(); args = sys.argv[1:]; s["calls"].append(" ".join(args)); save(s)
+s = load(); args = sys.argv[1:]; s["calls"].append(CALLER + ": " + " ".join(args)); save(s)
 c = s["container"]
 
 def fmt(f):
@@ -354,6 +358,10 @@ if args[:2] == ["volume", "inspect"]:
 if args[0] == "build":
     if os.environ.get("FAKE_BUILD") == "fail":
         sys.exit(1)
+    fcntl.flock(guard, fcntl.LOCK_UN)       # a slow build must not stall the others
+    time.sleep(float(os.environ.get("FAKE_BUILD_SLEEP", "0")))
+    fcntl.flock(guard, fcntl.LOCK_EX)
+    s = load()
     tag = args[args.index("-t") + 1]
     digest = hashlib.sha256((tag + str(len(s["calls"]))).encode()).hexdigest()
     s["images"][tag] = "sha256:" + digest[:16]
@@ -370,13 +378,13 @@ if args[0] == "run":
             host, ctr = args[i + 1].split(":")[:2]
             if ctr != "/data":
                 mounts[ctr] = host
-    script = args.index("/ops/sqlite_backup.py")
-    rest = args[script:]
+    rest = args[args.index("/ops/sqlite_backup.py"):]
     def host_path(p):
         for ctr, host in mounts.items():
             if p == ctr or p.startswith(ctr + "/"):
                 return host + p[len(ctr):]
         return p
+    fcntl.flock(guard, fcntl.LOCK_UN)
     sys.exit(subprocess.call([sys.executable] + [host_path(a) for a in rest]))
 if args[0] == "compose":
     if "up" in args:
@@ -402,6 +410,7 @@ class Stand:
     doubles for ssh and docker on the command line."""
 
     def __init__(self, tmp_path: Path):
+        self.tmp = tmp_path
         self.repo = make_project_with_real_scripts(tmp_path)
         self.remote = tmp_path / "server" / "blocktail-build"
         self.remote.mkdir(parents=True)
@@ -421,7 +430,8 @@ class Stand:
             "DOCKER": str(bin_dir / "docker"),
             "BLOCKTAIL_REMOTE": str(self.remote),
             "BLOCKTAIL_HOST": "test-host",
-            "BLOCKTAIL_HEALTH_TIMEOUT": "3",
+            "BLOCKTAIL_HEALTH_TIMEOUT": "1",
+            "BLOCKTAIL_HEALTH_INTERVAL": "0.1",
             "FAKE_DOCKER_STATE": str(self.state),
             "FAKE_DOCKER_DATA": str(self.data),
         }
@@ -435,18 +445,48 @@ class Stand:
     def deploy(self, **env) -> subprocess.CompletedProcess:
         return deploy(self.repo, env={**self.env, **env})
 
+    def script(self) -> Path:
+        return next((self.remote / "releases").glob("*/scripts/remote-deploy.sh"))
+
     def remote_script(self, *args, **env) -> subprocess.CompletedProcess:
-        script = next((self.remote / "releases").glob("*/scripts/remote-deploy.sh"))
-        return subprocess.run(["bash", str(script), *args], capture_output=True, text=True,
-                              check=False, env={**os.environ, **self.env, **env})
+        return subprocess.run(["bash", str(self.script()), *args], capture_output=True,
+                              text=True, check=False, env={**os.environ, **self.env, **env})
+
+    def start_remote(self, *args, **env) -> subprocess.Popen:
+        """The server script in the background, in its own process group."""
+        return subprocess.Popen(["bash", str(self.script()), *args], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True,
+                                env={**os.environ, **self.env, **env})
+
+    def incoming_copy(self, sha: str) -> Path:
+        """What a deploy session unpacks before it asks for the lock."""
+        target = self.remote / "releases" / f".incoming-{sha}-test-{os.getpid()}"
+        shutil.copytree(self.remote / "releases" / sha, target)
+        return target
 
     @property
     def docker(self) -> dict:
         return json.loads(self.state.read_text())
 
+    def calls_by(self, caller: str) -> list[str]:
+        return [c for c in self.docker["calls"] if c.startswith(caller + ": ")]
+
+    def wait_for_call(self, needle: str, timeout: float = 15) -> None:
+        import time
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.state.exists() and any(needle in c for c in self.docker["calls"]):
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"never saw {needle!r}")
+
     def pinned(self) -> str:
         text = (self.remote / "docker-compose.override.yml").read_text()
         return text.split("image:")[1].split()[0]
+
+    def last_good(self) -> tuple[str, str]:
+        tag, image = (self.remote / "last-good").read_text().split()
+        return tag, image
 
     def backups(self) -> list[Path]:
         return sorted((self.remote / "backups").glob("blocktail-*.db"))
@@ -467,6 +507,16 @@ def stand(tmp_path):
     return Stand(tmp_path)
 
 
+def deployed(stand: Stand, message: str, **env) -> str:
+    sha = stand.commit(message)
+    result = stand.deploy(**env)
+    assert result.returncode == 0, result.stderr
+    return sha
+
+
+# ---------------------------------------------------- a deploy, step by step
+
+
 def test_a_first_deploy_has_nothing_to_back_up(stand):
     sha = stand.commit("v1")
     result = stand.deploy()
@@ -474,16 +524,17 @@ def test_a_first_deploy_has_nothing_to_back_up(stand):
     assert "first deployment, nothing to back up" in result.stderr
     assert stand.pinned() == f"blocktail:{sha}"
     assert stand.docker["container"]["config_image"] == f"blocktail:{sha}"
+    assert stand.last_good()[0] == f"blocktail:{sha}"
     assert "healthz is liveness only" in result.stderr
     assert (stand.remote / ".env").read_text() == "ALCHEMY_API_KEY=server-side-only\n"
     release = stand.remote / "releases" / sha
     assert not (release / ".env").exists() and (release / "scripts" / "sqlite_backup.py").exists()
+    assert not list((stand.remote / "releases").glob(".incoming-*")), "moved into place"
     assert f"{sha} ok" in (stand.remote / "deployments.log").read_text()
 
 
-def test_a_deploy_backs_up_the_live_database_and_keeps_the_previous_image(stand):
-    v1 = stand.commit("v1")
-    assert stand.deploy().returncode == 0
+def test_a_deploy_backs_up_the_live_database_first(stand):
+    v1 = deployed(stand, "v1")
     writer = make_wal_db(stand.data / "blocktail.db", rows=30)  # the "running" app
 
     v2 = stand.commit("v2")
@@ -492,27 +543,24 @@ def test_a_deploy_backs_up_the_live_database_and_keeps_the_previous_image(stand)
     assert result.returncode == 0, result.stderr
 
     [made] = stand.backups()
-    assert f"before-{v2}" in made.name
+    assert made.name.endswith(f"before-{v2}-from-{v1}.db")
     conn = sqlite3.connect(made)
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] == 30
     conn.close()
 
-    images = stand.docker["images"]
-    assert images["blocktail:previous"] == images[f"blocktail:{v1}"]
     assert stand.pinned() == f"blocktail:{v2}"
+    assert stand.last_good() == (f"blocktail:{v2}", stand.docker["images"][f"blocktail:{v2}"])
     calls = stand.docker["calls"]
     backup_at = next(i for i, c in enumerate(calls) if "sqlite_backup.py" in c)
-    up_at = max(i for i, c in enumerate(calls) if c.startswith("compose") and " up " in c)
+    up_at = max(i for i, c in enumerate(calls) if " compose " in f" {c} " and " up " in c)
     assert backup_at < up_at, "the backup is taken before the new version starts"
 
 
 def test_a_failed_backup_stops_the_deploy_before_anything_changes(stand):
-    stand.commit("v1")
-    assert stand.deploy().returncode == 0
+    deployed(stand, "v1")
     make_wal_db(stand.data / "blocktail.db").close()
-    v2 = stand.commit("v2")
-    assert stand.deploy().returncode == 0
+    v2 = deployed(stand, "v2")
     good = stand.backups()
 
     (stand.data / "blocktail.db").write_bytes(b"SQLite format 3\x00" + os.urandom(8192))
@@ -523,83 +571,261 @@ def test_a_failed_backup_stops_the_deploy_before_anything_changes(stand):
     assert "database backup failed; the running version is untouched" in result.stderr
     assert sum(" up " in c for c in stand.docker["calls"]) == ups_before, "nothing was started"
     assert stand.pinned() == f"blocktail:{v2}", "still pinned to the running version"
+    assert stand.last_good()[0] == f"blocktail:{v2}"
     assert stand.backups() == good, "the earlier backups are still there"
     assert "aborted: backup failed" in (stand.remote / "deployments.log").read_text()
 
 
-def test_a_failed_health_check_shows_logs_and_how_to_roll_back(stand):
-    stand.commit("v1")
-    assert stand.deploy().returncode == 0
-    make_wal_db(stand.data / "blocktail.db").close()
-    v2 = stand.commit("v2")
-    result = stand.deploy(FAKE_HEALTH="fail")
-    assert result.returncode != 0
-    assert "did not become healthy" in result.stderr
-    assert "fake app log: migration 008 failed" in result.stderr
-    assert "rollback blocktail:previous" in result.stderr
-    assert "Nothing was rolled back automatically" in result.stderr
-    assert str(stand.backups()[-1]) in result.stderr, "names the backup to restore"
-    assert f"{v2} failed health check" in (stand.remote / "deployments.log").read_text()
-
-
-def test_rollback_starts_the_previous_image_and_leaves_the_database(stand):
-    v1 = stand.commit("v1")
-    assert stand.deploy().returncode == 0
-    make_wal_db(stand.data / "blocktail.db").close()
-    stand.commit("v2")
-    assert stand.deploy(FAKE_HEALTH="fail").returncode != 0
-    db_before = (stand.data / "blocktail.db").read_bytes()
-
-    result = stand.remote_script("rollback", "blocktail:previous")
-    assert result.returncode == 0, result.stderr
-    assert "the database is NOT restored" in result.stderr
-    assert stand.pinned() == "blocktail:previous"
-    images = stand.docker["images"]
-    assert stand.docker["container"]["image_id"] == images[f"blocktail:{v1}"]
-    assert (stand.data / "blocktail.db").read_bytes() == db_before
-
-
-def test_rollback_to_an_unknown_image_is_refused(stand):
-    stand.commit("v1")
-    assert stand.deploy().returncode == 0
-    result = stand.remote_script("rollback", "blocktail:nope")
-    assert result.returncode != 0
-    assert "no image blocktail:nope" in result.stderr
-
-
 def test_a_build_failure_leaves_the_running_version(stand):
-    v1 = stand.commit("v1")
-    assert stand.deploy().returncode == 0
+    v1 = deployed(stand, "v1")
     stand.commit("v2")
     result = stand.deploy(FAKE_BUILD="fail")
     assert result.returncode != 0
     assert "image build failed; the running version is untouched" in result.stderr
     assert stand.pinned() == f"blocktail:{v1}"
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+
+
+def test_compose_runs_in_the_same_project_so_the_volume_is_the_same(stand):
+    """The data volume is named after the compose project; a deploy must keep
+    using the one the running container belongs to."""
+    deployed(stand, "v1")
+    state = stand.docker
+    state["container"]["project"] = "legacy-name"
+    stand.state.write_text(json.dumps(state))
+    deployed(stand, "v2")
+    assert any("compose -p legacy-name up" in c for c in stand.docker["calls"])
 
 
 def test_five_backups_and_five_releases_are_kept(stand):
-    stand.commit("v0")
-    assert stand.deploy().returncode == 0
+    deployed(stand, "v0")
     make_wal_db(stand.data / "blocktail.db").close()
-    shas = []
-    for i in range(1, 8):
-        shas.append(stand.commit(f"v{i}"))
-        result = stand.deploy()
-        assert result.returncode == 0, result.stderr
+    shas = [deployed(stand, f"v{i}") for i in range(1, 8)]
     assert len(stand.backups()) == 5
     releases = {p.name for p in (stand.remote / "releases").iterdir()}
     assert len(releases) == 5
     assert shas[-1] in releases, "the running release is never pruned"
 
 
-def test_compose_runs_in_the_same_project_so_the_volume_is_the_same(stand):
-    """The data volume is named after the compose project; a deploy must keep
-    using the one the running container belongs to."""
-    stand.commit("v1")
-    assert stand.deploy().returncode == 0
-    state = stand.docker
-    state["container"]["project"] = "legacy-name"
-    stand.state.write_text(json.dumps(state))
+# ------------------------------------------------ what counts as last good
+
+
+def test_a_failed_health_check_points_at_the_last_good_sha(stand):
+    v1 = deployed(stand, "v1")
+    make_wal_db(stand.data / "blocktail.db").close()
+    v2 = stand.commit("v2")
+    result = stand.deploy(FAKE_HEALTH="fail")
+    assert result.returncode != 0
+    assert "did not become healthy" in result.stderr
+    assert "fake app log: migration 008 failed" in result.stderr
+    assert f"rollback blocktail:{v1}" in result.stderr, "an immutable tag, not 'previous'"
+    assert "Nothing was rolled back automatically" in result.stderr
+    [made] = stand.backups()
+    assert str(made) in result.stderr and made.name.endswith(f"-from-{v1}.db")
+    assert stand.last_good()[0] == f"blocktail:{v1}", "a failure never rewrites the record"
+    assert f"{v2} failed health check" in (stand.remote / "deployments.log").read_text()
+
+
+def test_repeated_failed_deploys_keep_the_way_back(stand):
+    """Each retry backs up the failed version and would rotate older backups
+    out; the last good version, its image and its newest backup survive."""
+    v1 = deployed(stand, "v1")
+    make_wal_db(stand.data / "blocktail.db").close()
+    v1_image = stand.docker["images"][f"blocktail:{v1}"]
+    v2 = stand.commit("v2")
+    assert stand.deploy(FAKE_HEALTH="fail").returncode != 0
+    for attempt in range(6):  # retries on the server; deploy.sh's own checks are tested above
+        result = stand.remote_script("deploy", v2, stand.incoming_copy(v2), FAKE_HEALTH="fail")
+        assert result.returncode != 0
+        assert f"rollback blocktail:{v1}" in result.stderr, f"attempt {attempt}"
+    builds = [c for c in stand.docker["calls"] if c.startswith("-: build")]
+    assert len(builds) == 2, "v1 once, v2 once: a commit's image is never rebuilt"
+    assert stand.last_good() == (f"blocktail:{v1}", v1_image)
+    from_v1 = [p for p in stand.backups() if p.name.endswith(f"-from-{v1}.db")]
+    assert len(from_v1) == 1, "the backup taken from the good version is still there"
+    assert len(stand.backups()) <= 6
+
+    result = stand.remote_script("rollback")
+    assert result.returncode == 0, result.stderr
+    assert stand.docker["container"]["image_id"] == v1_image
+    assert stand.pinned() == f"blocktail:{v1}"
+
+
+def test_rollback_defaults_to_the_last_good_version_and_leaves_the_database(stand):
+    v1 = deployed(stand, "v1")
+    make_wal_db(stand.data / "blocktail.db").close()
     stand.commit("v2")
-    assert stand.deploy().returncode == 0
-    assert any("compose -p legacy-name up" in c for c in stand.docker["calls"])
+    assert stand.deploy(FAKE_HEALTH="fail").returncode != 0
+    db_before = (stand.data / "blocktail.db").read_bytes()
+
+    result = stand.remote_script("rollback")
+    assert result.returncode == 0, result.stderr
+    assert "the database is NOT restored" in result.stderr
+    assert stand.pinned() == f"blocktail:{v1}"
+    assert (stand.data / "blocktail.db").read_bytes() == db_before
+
+
+def test_rollback_to_a_named_sha_records_it_as_good(stand):
+    v1 = deployed(stand, "v1")
+    v2 = deployed(stand, "v2")
+    result = stand.remote_script("rollback", f"blocktail:{v1}")
+    assert result.returncode == 0, result.stderr
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+    assert v2  # still on the host for a roll forward
+    assert f"blocktail:{v2}" in stand.docker["images"]
+
+
+def test_rollback_refuses_a_good_tag_that_was_rebuilt_by_hand(stand):
+    v1 = deployed(stand, "v1")
+    deployed(stand, "v2")
+    stand.remote_script("rollback", f"blocktail:{v1}")
+    state = stand.docker
+    state["images"][f"blocktail:{v1}"] = "sha256:somethingelse"
+    stand.state.write_text(json.dumps(state))
+    result = stand.remote_script("rollback")
+    assert result.returncode != 0
+    assert "rebuilt or retagged by hand" in result.stderr
+
+
+def test_rollback_to_an_unknown_image_is_refused(stand):
+    deployed(stand, "v1")
+    result = stand.remote_script("rollback", "blocktail:nope")
+    assert result.returncode != 0
+    assert "no image blocktail:nope" in result.stderr
+
+
+def test_the_first_scripted_deploy_adopts_what_is_running_as_good(stand):
+    """A server deployed by the old script: a container runs blocktail:0.1.0,
+    and nothing is recorded. That image becomes the baseline to return to."""
+    stand.state.write_text(json.dumps({
+        "images": {"blocktail:0.1.0": "sha256:legacy000000000"},
+        "container": {"image_id": "sha256:legacy000000000", "config_image": "blocktail:0.1.0",
+                      "status": "running", "project": "blocktail-build"},
+        "volume": True, "calls": [],
+    }))
+    make_wal_db(stand.data / "blocktail.db").close()
+    stand.commit("v1")
+    result = stand.deploy(FAKE_HEALTH="fail")
+    assert result.returncode != 0
+    assert "recorded as blocktail:baseline-legacy000000" in result.stderr
+    assert "rollback blocktail:baseline-legacy000000" in result.stderr
+    [made] = stand.backups()
+    assert made.name.endswith("-from-baseline-legacy000000.db")
+
+    assert stand.remote_script("rollback").returncode == 0
+    assert stand.docker["container"]["image_id"] == "sha256:legacy000000000"
+
+
+def test_rollback_with_nothing_recorded_asks_for_a_tag(stand):
+    deployed(stand, "v1")
+    (stand.remote / "last-good").unlink()
+    result = stand.remote_script("rollback")
+    assert result.returncode != 0
+    assert "name an image tag" in result.stderr
+
+
+# ----------------------------------------------------------------- the lock
+
+
+@pytest.fixture(params=["flock", "lock directory"])
+def lock_kind(request, stand):
+    """Every lock test runs with flock and with the fallback used where flock
+    is missing."""
+    return {} if request.param == "flock" else {"BLOCKTAIL_LOCK_FALLBACK": "1"}
+
+
+def test_a_second_deploy_is_refused_and_changes_nothing(stand, lock_kind):
+    v1 = deployed(stand, "v1")
+    v2 = stand.commit("v2")
+    stand.deploy(FAKE_BUILD="fail")  # ships releases/<v2>, builds nothing
+    first = stand.start_remote("deploy", v2, stand.incoming_copy(v2),
+                               FAKE_BUILD_SLEEP="3", FAKE_CALLER="A", **lock_kind)
+    try:
+        stand.wait_for_call("A: build")  # A holds the lock and is mid-build
+        pinned_before = stand.pinned()
+        mine = stand.incoming_copy(v2)
+        second = stand.remote_script("deploy", v2, mine, FAKE_CALLER="B", **lock_kind)
+        assert second.returncode != 0
+        assert "another deploy or rollback is running" in second.stderr
+        assert f"deploy {v2}" in second.stderr, "says who holds it"
+        assert stand.calls_by("B") == [], "refused before touching docker"
+        assert not mine.exists(), "its own unpacked tree is removed"
+        assert stand.pinned() == pinned_before == f"blocktail:{v1}"
+        assert stand.last_good()[0] == f"blocktail:{v1}"
+    finally:
+        _, err = first.communicate(timeout=60)
+    assert first.returncode == 0, err
+    assert stand.last_good()[0] == f"blocktail:{v2}", "the first deploy was not disturbed"
+
+
+def test_a_rollback_during_a_deploy_is_refused(stand, lock_kind):
+    v1 = deployed(stand, "v1")
+    v2 = stand.commit("v2")
+    stand.deploy(FAKE_BUILD="fail")  # ships releases/<v2>, builds nothing
+    first = stand.start_remote("deploy", v2, stand.incoming_copy(v2),
+                               FAKE_BUILD_SLEEP="3", FAKE_CALLER="A", **lock_kind)
+    try:
+        stand.wait_for_call("A: build")
+        rollback = stand.remote_script("rollback", FAKE_CALLER="B", **lock_kind)
+        assert rollback.returncode != 0
+        assert "another deploy or rollback is running" in rollback.stderr
+        assert stand.calls_by("B") == []
+        assert stand.last_good()[0] == f"blocktail:{v1}"
+    finally:
+        _, err = first.communicate(timeout=60)
+    assert first.returncode == 0, err
+    assert stand.last_good()[0] == f"blocktail:{v2}", "the deploy itself was not disturbed"
+
+
+def test_a_crashed_deploy_does_not_hold_the_lock(stand, lock_kind):
+    import signal
+
+    deployed(stand, "v1")
+    v2 = stand.commit("v2")
+    stand.deploy(FAKE_BUILD="fail")
+    first = stand.start_remote("deploy", v2, stand.incoming_copy(v2),
+                               FAKE_BUILD_SLEEP="30", FAKE_CALLER="A", **lock_kind)
+    stand.wait_for_call("A: build")
+    os.killpg(first.pid, signal.SIGKILL)  # no trap runs, no cleanup
+    first.communicate(timeout=10)
+
+    result = stand.remote_script("deploy", v2, stand.incoming_copy(v2), **lock_kind)
+    assert result.returncode == 0, result.stderr
+    if lock_kind:
+        assert "removing a stale lock" in result.stderr
+    assert stand.last_good()[0] == f"blocktail:{v2}"
+
+
+def test_deploy_sh_ships_into_a_private_directory(stand):
+    """Two sessions never unpack into the same place; the server moves the
+    tree into releases/<sha> only once it holds the lock."""
+    sha = deployed(stand, "v1")
+    assert (stand.remote / "releases" / sha / "Dockerfile").exists()
+    assert not list((stand.remote / "releases").glob(".incoming-*"))
+
+
+def test_a_long_label_is_not_cut_short(tmp_path):
+    """The deploy finds "the backup taken from the last good version" by the
+    end of its name; a label cut at a fixed length would hide it."""
+    db = tmp_path / "blocktail.db"
+    make_wal_db(db).close()
+    label = "before-0123456789ab-from-baseline-0123456789ab"
+    made = tool("backup", "--source", db, "--dest-dir", tmp_path / "b", "--label", label)
+    assert made.returncode == 0
+    assert made.stdout.strip().endswith(f"-{label}.db")
+
+
+def test_the_protected_backup_survives_rotation(tmp_path):
+    db = tmp_path / "blocktail.db"
+    make_wal_db(db).close()
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    shutil.copyfile(db, dest / "blocktail-20260101T000000Z-before-v2-from-v1.db")
+    for i in range(6):
+        shutil.copyfile(db, dest / f"blocktail-2026010{i + 2}T000000Z-before-v2-from-v2.db")
+    result = tool("backup", "--source", db, "--dest-dir", dest, "--keep", "5",
+                  "--label", "before-v2-from-v2", "--protect=-from-v1.db")
+    assert result.returncode == 0, result.stderr
+    names = sorted(p.name for p in dest.glob("blocktail-*.db"))
+    assert "blocktail-20260101T000000Z-before-v2-from-v1.db" in names
+    assert len(names) == 6, "five newest, plus the protected one"
