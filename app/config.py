@@ -53,8 +53,10 @@ class WatchConfig:
 class Settings:
     config_path: Path
     database_path: Path
-    alchemy_url: str
-    alchemy_api_key: str
+    # Secrets stay out of repr(): a settings object ends up in tracebacks,
+    # debug output and assertion messages, and the URL carries the key.
+    alchemy_url: str = field(repr=False)
+    alchemy_api_key: str = field(repr=False)
     sync_interval: int
     backfill_days: int
     reorg_depth: int
@@ -73,7 +75,7 @@ class Settings:
     port: int
     log_level: str
     auth_user: str
-    auth_password: str
+    auth_password: str = field(repr=False)
 
     @property
     def auth_enabled(self) -> bool:
