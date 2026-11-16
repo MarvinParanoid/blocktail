@@ -90,13 +90,17 @@ gid="$(docker run --rm --entrypoint id "$TAG" -g)"
 say "ok: the image runs as uid $uid"
 
 if [ -n "$PREBUILT" ]; then
+  # By name anywhere; a private key by content where project or user files
+  # could land (the system CA bundle is public and is not one).
   found="$(docker run --rm --entrypoint sh "$TAG" -c 'find / -xdev \( -name .env -o -name "wallets.yml" \
-    -o -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "*.pem" -o -name "id_*" \) \
-    -not -path "/proc/*" 2>/dev/null || true')"
+    -o -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "id_rsa" -o -name "id_ecdsa" \
+    -o -name "id_ed25519" \) -not -path "/proc/*" 2>/dev/null
+    grep -rlI -e "-----BEGIN [A-Z ]*PRIVATE KEY-----" /srv /data /config /root /home /tmp /etc 2>/dev/null
+    true')"
   [ -z "$found" ] || fail "files that must never ship are in the image: $found"
   docker image inspect -f '{{json .Config.Env}}' "$TAG" | grep -qE '(ALCHEMY_API_KEY|ALCHEMY_URL|AUTH_USER|AUTH_PASSWORD)=' \
     && fail "the image config carries a credential: $(docker image inspect -f '{{json .Config.Env}}' "$TAG")"
-  say "ok: no .env, wallets.yml, database, key file or credential variable in the image"
+  say "ok: no .env, wallets.yml, database, private key or credential variable in the image"
 else
   found="$(docker run --rm --entrypoint sh "$TAG" -c \
     'grep -rIl --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev -- "$0" / 2>/dev/null || true' "$KEY")"
