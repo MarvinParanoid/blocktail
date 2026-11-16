@@ -51,6 +51,11 @@ class Chain(Protocol):
         is on, and the same twenty bytes name different things elsewhere.
         """
 
+    def addresses_known_as(self, term: str) -> tuple[str, ...]:
+        """The inverse of ``known_label``, for search: the addresses (in
+        storage form) whose known name contains ``term``, ignoring case.
+        Empty for an empty term."""
+
     def token_decimals(self, contract_address: str) -> int | None:
         """Decimals a reviewed source states for this exact token contract, or
         ``None``. Believed over a metadata lookup, which can fail."""

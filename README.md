@@ -65,7 +65,10 @@ signature, and it has no code path that could send a transaction.
   panel: total value, native, tokens, and each asset aggregated across accounts.
   Clicking an asset filters the feed to it; collapsed, the panel is one line.
 - Filters by wallet, direction and asset, with text search across addresses,
-  transaction hashes and labels — no page reload.
+  transaction hashes, token symbols, wallet names, labels from the config and
+  built-in names of well-known addresses ("Uniswap: Universal Router") — no
+  page reload. The search is plain text, ignoring case: `%` and `_` are
+  characters, not wildcards.
 - On a wide screen the content is capped at 1440px and centred, with the top bar,
   filters and table head sticky as the page scrolls.
 - On a phone it is not a squeezed desktop. The scope lives in the top bar, the

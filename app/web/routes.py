@@ -233,6 +233,7 @@ def _counts(ctx, filters: Filters, scope_ids) -> dict:
         direction=filters.direction,
         asset_id=filters.asset_id,
         search=filters.search,
+        search_addresses=ctx.chain.addresses_known_as(filters.search),
     )
     everything = ctx.db.count_activities(**common)
     if filters.show_dust:
@@ -259,6 +260,9 @@ def _load_page(ctx, filters: Filters) -> tuple[list, str | None]:
         direction=filters.direction,
         asset_id=filters.asset_id,
         search=filters.search,
+        # Built-in names are not in the database; the chain says which
+        # addresses carry one that matches (U-09).
+        search_addresses=ctx.chain.addresses_known_as(filters.search),
         dust_thresholds=None if filters.show_dust else _dust_thresholds(ctx),
         exclude_assets=None if filters.show_dust else _unrecognised_asset_ids(ctx),
         cursor=filters.cursor,

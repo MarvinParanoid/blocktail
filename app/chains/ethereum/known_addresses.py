@@ -109,6 +109,21 @@ def label_for(address: str) -> str | None:
     return None if entry is None else entry[0]
 
 
+def addresses_named(term: str) -> tuple[str, ...]:
+    """Lowercase addresses whose name contains ``term``, ignoring case.
+
+    These names live here, not in the database, so a search in SQL cannot see
+    them; the search is given these addresses instead (audit U-09). Plain
+    substring, the same thing the search does with every other field.
+    """
+    needle = term.strip().casefold()
+    if not needle:
+        return ()
+    return tuple(
+        sorted(addr for addr, (name, _) in KNOWN_ADDRESSES.items() if needle in name.casefold())
+    )
+
+
 def kind_of(address: str) -> AddressKind | None:
     entry = KNOWN_ADDRESSES.get(address.lower())
     return None if entry is None else entry[1]
