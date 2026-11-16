@@ -50,7 +50,7 @@
   {% if error %}<p class="sheet__error" id="wallet-error" role="alert">{{ error }}</p>{% endif %}
 
   <div class="sheet__actions">
-    <button type="button" class="sheet__cancel" onclick="closeWalletDialog()">Cancel</button>
+    <button type="button" class="sheet__cancel" data-action="close-wallet-dialog">Cancel</button>
     <button type="submit" class="sheet__submit">{{ 'Save' if editing else 'Add' }}</button>
   </div>
 </form>

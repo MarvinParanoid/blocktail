@@ -688,7 +688,7 @@ def _form_response(request, ctx, *, account=None, form=None, error=None, status=
 
     ``changed`` is (action, account id) after a successful change, sent to the
     page as one event, ``wallet-changed`` {action, id}, whose handler decides
-    the order of what follows (see applyFilters in _behaviour.html)."""
+    the order of what follows (see applyFilters in static/app.js)."""
     headers = None
     if changed is not None and not error:
         action, account_id = changed

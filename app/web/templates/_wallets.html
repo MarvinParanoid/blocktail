@@ -1,7 +1,7 @@
 {% macro wallet_row(wallet) %}
   <div class="wallet{{ ' is-selected' if wallet.selected }}">
     {# data-pick: the page routes the choice through the filter form (see
-       pick() in _behaviour.html); the href is what a new tab opens. #}
+       pick() in static/app.js); the href is what a new tab opens. #}
     <a class="wallet__hit" href="?wallet={{ wallet.id }}" data-pick="wallet:{{ wallet.id }}">
       <span class="wallet__name">{{ wallet.name }}</span>
       <span class="wallet__value num" title="{{ wallet.value_exact or 'no valuation' }}">
@@ -14,11 +14,11 @@
         &middot;&middot;&middot;
       </summary>
       <div class="menu">
-        <button type="button" onclick="copyAddress('{{ wallet.address }}', this)">Copy address</button>
+        <button type="button" data-action="copy-address" data-address="{{ wallet.address }}">Copy address</button>
         <a href="{{ wallet.url }}" target="_blank" rel="noopener noreferrer">Open on Etherscan</a>
         {% if wallet.editable %}
           <hr>
-          <button type="button" onclick="openWalletDialog('{{ wallet.id }}')">Rename&hellip;</button>
+          <button type="button" data-action="open-wallet-dialog" data-wallet="{{ wallet.id }}">Rename&hellip;</button>
           <button type="button"
                   hx-post="/wallets/{{ wallet.id }}" hx-vals='{"set_owned": "{{ 'false' if wallet.is_owned else 'true' }}"}'
                   hx-target="#wallet-dialog-body" hx-swap="innerHTML">
@@ -78,5 +78,5 @@
 
   {% if not wallets %}<p class="empty">No wallets configured.</p>{% endif %}
 
-  <button type="button" class="add-wallet-link" onclick="openWalletDialog()">+ Add wallet</button>
+  <button type="button" class="add-wallet-link" data-action="open-wallet-dialog">+ Add wallet</button>
 </section>

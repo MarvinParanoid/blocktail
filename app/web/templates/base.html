@@ -7,20 +7,11 @@
   <link rel="stylesheet" href="{{ static_url(stylesheet | default('app.css')) }}">
   <meta name="description" content="blocktail — tail -f for your wallets. A read-only Ethereum activity monitor.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230b0d10'/><path d='M8 11l5 5-5 5' fill='none' stroke='%233ddc84' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M17 21h7' fill='none' stroke='%233ddc84' stroke-width='3' stroke-linecap='round'/></svg>">
-  <script>
-    // Applied before first paint so a collapsed panel never flashes open.
-    // A narrow screen should open on activity, not on a portfolio panel.
-    try {
-      const stored = localStorage.getItem('blocktail.summary.collapsed');
-      const collapsed = stored === null
-        ? window.matchMedia('(max-width: 860px)').matches
-        : stored === '1';
-      if (collapsed) document.documentElement.classList.add('summary-collapsed');
-      if (localStorage.getItem('blocktail.tokens.showHidden') === '1') {
-        document.documentElement.classList.add('show-hidden-tokens');
-      }
-    } catch (e) {}
-  </script>
+  {# Before htmx loads: no eval (hx-on, trigger filters), no inline <style>,
+     no <script> run from a swapped fragment — what the CSP would refuse
+     anyway (app/security.py). #}
+  <meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false}'>
+  <script src="{{ static_url('boot.js') }}"></script>
   <script src="{{ static_url('htmx.min.js') }}"></script>
 </head>
 <body>

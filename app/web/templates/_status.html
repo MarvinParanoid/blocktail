@@ -5,7 +5,7 @@
   {# The scope belongs in the one bar that never scrolls away. On a narrow
      screen this is that bar — the summary panel cannot be it, because a sticky
      child stops sticking the moment its parent has scrolled past. #}
-  <button type="button" class="topline__scope" onclick="openScopeSheet()">
+  <button type="button" class="topline__scope" data-action="open-scope-sheet">
     <span>{{ scope_label }}</span>
     <span class="scope-trigger__caret" aria-hidden="true">&#9662;</span>
   </button>

@@ -4,7 +4,7 @@
     <h2 class="insp__label" id="insp-title" tabindex="-1">Transaction</h2>
     <a class="insp__hash num" href="{{ tx.tx_url }}" target="_blank" rel="noopener noreferrer"
        title="{{ tx.tx_hash }} — open on Etherscan">{{ tx.tx_short }}<span class="insp__ext" aria-hidden="true">&#8599;</span></a>
-    <button type="button" class="insp__close" onclick="closeInspector()" aria-label="Close">&times;</button>
+    <button type="button" class="insp__close" data-action="close-inspector" aria-label="Close">&times;</button>
   </header>
 
   {# Two lines rather than a key/value table. Where the transaction sits, and
