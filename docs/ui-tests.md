@@ -17,6 +17,25 @@ CI's `pytest` job and `scripts/deploy.sh` do not run them.
 Without Playwright installed the whole directory is skipped with that hint,
 rather than failing.
 
+### On a slow server
+
+```bash
+BLOCKTAIL_UI_LATENCY_MS=400 .venv/bin/python -m pytest tests_ui   # every htmx answer 400 ms late
+BLOCKTAIL_UI_CPU_SLOWDOWN=4 .venv/bin/python -m pytest tests_ui   # the page on a quarter of the CPU
+```
+
+The latency is the stand's: the server holds each htmx request before
+answering it, each on its own, so requests overlap and finish in the order a
+busy server would finish them. The suite passes at 0, 100 and 400 ms.
+
+A test waits for what it is about to read, never for a fixed time:
+`feed_answers(page)` (conftest) until the feed shows the answer to the
+question the filter form asks now and htmx has nothing in flight — whatever
+followed the answer (the hidden-transfers note, the sidebar, the summary)
+included; `htmx_idle(page)`; or the element itself (`locator.wait_for()`).
+`wait_for_load_state("networkidle")` is no such wait: it is a load state,
+reached once when the page loaded, and returns at once afterwards.
+
 ## What they run against
 
 `tests_ui/stand.py` starts the real application — the real indexer, the real

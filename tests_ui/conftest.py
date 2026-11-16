@@ -18,7 +18,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,6 +47,58 @@ document.addEventListener('securitypolicyviolation', (e) => {
     + ' (' + (e.sourceFile || 'page') + ':' + e.lineNumber + ')');
 });
 """
+
+# Every answer the feed has shown, as the query string it answered. A response
+# htmx was told not to swap (an answer to a question no longer asked) is not
+# here: afterSwap fires only for what was swapped in.
+FEED_LOG = """
+window.__feedAnswers = [];
+document.addEventListener('htmx:afterSwap', (e) => {
+  const target = e.detail.target;
+  if (target && target.id === 'feed-body' && e.detail.xhr) {
+    window.__feedAnswers.push(new URL(e.detail.xhr.responseURL).search);
+  }
+});
+"""
+
+# Nothing htmx sent is still out, and nothing it swapped is still settling.
+HTMX_IDLE = "!document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')"
+
+# The feed shows the answer to the question the filter form asks now — the
+# same filters, read the way the page compares them (what is empty or "all"
+# is no filter; a page cursor is not part of the question) — swapped in after
+# the first `since` answers, and htmx is idle: whatever followed the answer
+# (the hidden-transfers note, the sidebar, the summary) has arrived too.
+FEED_ANSWERS_FORM = """(since) => {
+  const question = (search) => [...new URLSearchParams(search)]
+    .filter(([k, v]) => v && k !== 'before' && k !== 'after_day'
+            && !((k === 'scope' || k === 'direction') && v === 'all'))
+    .map(([k, v]) => k + '=' + v).sort().join('&');
+  const answers = window.__feedAnswers || [];
+  if (answers.length <= since) return false;
+  const asked = new URLSearchParams(new FormData(document.getElementById('filters')));
+  return question(answers[answers.length - 1]) === question(asked.toString())
+    && """ + HTMX_IDLE + """;
+}"""
+
+
+def feed_answers(page, since: int = 0) -> None:
+    """Wait until the feed answers what the form asks (see FEED_ANSWERS_FORM).
+
+    What a test waits for after it changes the feed, instead of a fixed time:
+    on a slow server the answer simply comes later, and a test that read the
+    page before it would see the previous answer."""
+    page.wait_for_function(FEED_ANSWERS_FORM, arg=since)
+
+
+def feed_answer_count(page) -> int:
+    """How many answers the feed has shown so far; pass it to feed_answers
+    to wait for a new answer to an unchanged question (after a wallet change)."""
+    return page.evaluate("() => (window.__feedAnswers || []).length")
+
+
+def htmx_idle(page) -> None:
+    page.wait_for_function("() => " + HTMX_IDLE)
 
 
 @dataclass(frozen=True)
@@ -154,6 +205,7 @@ def _start_session(browser, request, stand: Stand, viewport: Viewport) -> Sessio
     errors: list[str] = []
     context.expose_binding("__blocktailCsp", lambda source, text: errors.append(f"csp: {text}"))
     context.add_init_script(CSP_LISTENER)
+    context.add_init_script(FEED_LOG)
     page = context.new_page()
     # BLOCKTAIL_UI_CPU_SLOWDOWN=4 runs the page on a quarter of the CPU, as on
     # a slow CI runner: a test that only passes on a fast machine shows here.
@@ -162,15 +214,11 @@ def _start_session(browser, request, stand: Stand, viewport: Viewport) -> Sessio
         context.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": slowdown})
     session = Session(page=page, context=context, stand=stand, viewport=viewport, errors=errors)
 
-    # BLOCKTAIL_UI_LATENCY_MS=400 holds every htmx request that long before it
-    # reaches the stand, as a busy server would: a test that reads the page
-    # before the answer arrives fails here instead of only on a slow runner.
-    latency = float(os.environ.get("BLOCKTAIL_UI_LATENCY_MS") or 0) / 1000
+    # BLOCKTAIL_UI_LATENCY_MS: see stand._with_latency (the server waits,
+    # not this handler, which would serialise every request).
 
     def offline(route):
         if route.request.url.startswith(stand.url):
-            if latency and route.request.resource_type in ("xhr", "fetch"):
-                time.sleep(latency)
             route.continue_()
         else:
             session.blocked.append(route.request.url)

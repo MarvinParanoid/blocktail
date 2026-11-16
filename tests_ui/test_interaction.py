@@ -23,7 +23,18 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from conftest import DESKTOP, MOBILE, SCRIPT, SMALL, TABLET, run_axe, viewports
+from conftest import (
+    DESKTOP,
+    MOBILE,
+    SCRIPT,
+    SMALL,
+    TABLET,
+    feed_answer_count,
+    feed_answers,
+    htmx_idle,
+    run_axe,
+    viewports,
+)
 from stand import REMOVABLE
 
 from tests.conftest import tx_hash
@@ -54,11 +65,6 @@ def query(path: str) -> dict[str, str]:
     return {k: v[0] for k, v in parse_qs(urlparse(path).query).items()}
 
 
-def settle(page, ms: int = 700):
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(ms)
-
-
 def symbols(page) -> set[str]:
     return {s.strip() for s in page.locator(f"{ROWS} .cell-value .sym").all_inner_texts()}
 
@@ -82,7 +88,7 @@ def test_pasting_with_the_keyboard_searches(session, viewport):
     page.evaluate("() => navigator.clipboard.writeText('Binance')")
     box.focus()
     page.keyboard.press("Control+V")
-    settle(page)
+    feed_answers(page)
     assert box.input_value() == "Binance"
     assert 0 < rows(page).count() < before, session.where("Ctrl+V applied the search")
     assert query(page.url).get("q") == "Binance", session.where(page.url)
@@ -97,7 +103,7 @@ def test_pasting_from_the_context_menu_searches(session, viewport):
         box.focus(); box.value = 'Binance';
         box.dispatchEvent(new InputEvent('input',
             {bubbles: true, inputType: 'insertFromPaste', data: 'Binance'})); }""")
-    settle(page)
+    feed_answers(page)
     assert 0 < rows(page).count() < before, session.where("a paste with no key applied")
 
 
@@ -106,7 +112,7 @@ def test_clearing_the_search_brings_everything_back(session, viewport):
     page = session.open("/")
     before = rows(page).count()
     page.locator("#search").press_sequentially("Binance", delay=20)
-    settle(page)
+    feed_answers(page)
     assert rows(page).count() < before
     # The native clear (the × in a search box, or Escape in it): an input
     # event and a "search" event, no keyup of a printable key.
@@ -114,7 +120,7 @@ def test_clearing_the_search_brings_everything_back(session, viewport):
         box.value = '';
         box.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'deleteContent'}));
         box.dispatchEvent(new Event('search', {bubbles: true})); }""")
-    settle(page)
+    feed_answers(page)
     assert rows(page).count() == before, session.where("cleared: everything is back")
     assert "q" not in query(page.url), session.where(page.url)
 
@@ -124,7 +130,7 @@ def test_typing_sends_one_search_when_it_pauses(session, viewport):
     page = session.open("/")
     seen = record_requests(page)
     page.locator("#search").press_sequentially("Binance", delay=40)
-    settle(page)
+    feed_answers(page)
     searches = [p for p in seen if p.startswith("/activity") and "q=" in p]
     assert [query(p)["q"] for p in searches] == ["Binance"], session.where(f"{searches}")
 
@@ -143,23 +149,31 @@ def test_a_slow_answer_to_an_old_search_is_never_shown(session, viewport):
             route.continue_()
 
     page.route("**/activity?*", hold)
+    # Every question the form asks, sent or queued behind one in flight.
+    page.evaluate("""() => { window.__asked = 0; document.getElementById('filters')
+        .addEventListener('htmx:confirm', () => window.__asked++); }""")
     box = page.locator("#search")
     box.fill("USDC")
-    page.wait_for_function("() => true")
+    page.wait_for_function("() => window.__asked === 1")
     deadline = time.monotonic() + 5
     while not held and time.monotonic() < deadline:
         page.wait_for_timeout(50)
     assert held, session.where("the first search was sent")
 
     box.fill("Binance")
-    settle(page, 500)
-    for route in held:      # the old answer arrives last
+    # The second question is asked (queued behind the first, which is held)
+    # before the first answer is let go: the old answer arrives last.
+    page.wait_for_function("() => window.__asked >= 2")
+    for route in held:
         try:
             route.continue_()
         except Exception:   # aborted by the page: exactly what should happen
             pass
-    settle(page, 500)
+    feed_answers(page)
     page.unroute("**/activity?*")
+    shown = page.evaluate("() => window.__feedAnswers")
+    assert not any(query(a).get("q") == "USDC" for a in shown), \
+        session.where(f"the old answer was never swapped in: {shown}")
     counterparties = page.locator(f"{ROWS} .cell-party").all_inner_texts()
     assert counterparties and all("Binance" in c for c in counterparties), \
         session.where(f"rows answer 'Binance': {counterparties[:5]}")
@@ -173,25 +187,25 @@ def search_for(page, text):
     box = page.locator("#search")
     box.fill("")
     box.press_sequentially(text, delay=15)
-    settle(page)
+    feed_answers(page)
 
 
 @viewports(DESKTOP)
 def test_search_finds_a_built_in_name_within_the_chosen_wallet(session, viewport):
     page = session.open("/")
     page.locator(".wallet__hit", has_text="Trading").click()
-    settle(page)
+    feed_answers(page)
     search_for(page, "universal router")
     hashes = page.locator(ROWS).evaluate_all("rows => rows.map(r => r.dataset.tx)")
     assert hashes == [tx_hash("ui-to-router")], session.where(f"in Trading: {hashes}")
     assert "Uniswap" in page.locator(ROWS).first.inner_text()
 
     page.locator(".wallet__hit", has_text="Cold").click()
-    settle(page)
+    feed_answers(page)
     assert rows(page).count() == 0, session.where("Cold never dealt with the router")
 
     page.locator(".wallets__group--all").click()
-    settle(page)
+    feed_answers(page)
     assert rows(page).count() == 1, session.where("all activity: the one row")
     assert query(page.url) == {"q": "universal router"}, session.where(page.url)
 
@@ -216,7 +230,7 @@ def test_the_hidden_note_follows_the_sidebar(session, viewport):
     seen = record_requests(page)
     whale = session.stand.account_id("Whale #1")
     page.locator(".wallet__hit", has_text="Whale #1").click()
-    settle(page)
+    feed_answers(page)
     notes = [p for p in seen if p.startswith("/dust-note")]
     assert any(query(p).get("wallet") == str(whale) for p in notes), \
         session.where(f"the note asked again for the wallet: {notes}")
@@ -228,7 +242,7 @@ def test_switching_quickly_ends_on_the_last_choice(session, viewport):
     page = session.open("/")
     for name in ("Main", "Cold", "Trading", "Cold"):
         page.locator(".wallet__hit", has_text=name).click()
-    settle(page)
+    feed_answers(page)
     cold = session.stand.account_id("Cold")
     assert query(page.url).get("wallet") == str(cold)
     wallets = {w.strip() for w in page.locator(f"{ROWS} .cell-wallet").all_inner_texts()}
@@ -287,11 +301,14 @@ def test_removing_the_selected_wallet_never_asks_for_it_again(fresh_session, vie
     assert rows(page).count() >= 1
     seen = record_requests(page)
 
+    answers = feed_answer_count(page)
     page.once("dialog", lambda dialog: dialog.accept())
     page.locator('summary[aria-label="Actions for Removable"]').click()
     page.locator(".wallet__menu[open] .menu__danger").click()
     page.wait_for_function("() => !document.querySelector('#wallet-value').value", timeout=5000)
-    settle(page, 1200)
+    # The feed answers again, then the sidebar and the summary follow it.
+    feed_answers(page, since=answers)
+    page.locator(".wallet__name", has_text="Removable").wait_for(state="detached")
 
     after = seen
     stale = [p for p in after if query(p).get("wallet") == str(removable)]
@@ -308,13 +325,18 @@ def test_adding_a_wallet_updates_the_page_once(fresh_session, viewport):
     session = fresh_session
     page = session.open("/")
     seen = record_requests(page)
+    answers = feed_answer_count(page)
     page.locator(".add-wallet-link").click()
     page.wait_for_selector("#wallet-dialog[open] input[name=address]")
     page.fill("#wallet-dialog input[name=name]", "Removable")
     page.fill("#wallet-dialog input[name=address]", REMOVABLE)
     page.keyboard.press("Enter")
     page.wait_for_function("() => !document.querySelector('#wallet-dialog').open", timeout=5000)
-    settle(page, 1200)
+    # The feed answers again, then the sidebar (with the new wallet) and the
+    # summary follow it; once htmx is idle nothing else is on its way.
+    feed_answers(page, since=answers)
+    page.locator(".wallet__name", has_text="Removable").wait_for()
+    htmx_idle(page)
     assert page.locator(".wallet__name", has_text="Removable").count() == 1
     after = [p for p in seen if not p.startswith("/wallets/form")]
     for path in ("/wallets", "/summary"):
@@ -346,7 +368,7 @@ def test_a_link_to_a_removed_wallet_says_so(fresh_session, viewport):
         assert page.locator(".wallets__group--all.is-selected").count() == 0
 
     notice.get_by_role("link", name="Show all activity").click()
-    settle(page)
+    feed_answers(page)
     assert page.locator(".scope-missing").count() == 0
     assert rows(page).count() >= 20, session.where("back to everything")
     assert "wallet" not in query(page.url), session.where(page.url)
@@ -363,11 +385,11 @@ def test_back_and_forward_through_a_removed_wallet(fresh_session, viewport):
     session.open(f"/?wallet={removable}")
     assert page.locator(".scope-missing").is_visible()
     page.go_back()
-    settle(page)
+    htmx_idle(page)
     assert page.locator(".scope-missing").count() == 0 and rows(page).count() >= 20, \
         session.where("back: all activity")
     page.go_forward()
-    settle(page)
+    htmx_idle(page)
     assert page.locator(".scope-missing").is_visible(), session.where("forward: the notice again")
     assert rows(page).count() == 0
 
@@ -387,7 +409,7 @@ def test_a_feed_refresh_leaves_the_open_inspector_alone(session, viewport):
 
     with page.expect_response(lambda r: "/activity" in r.url):
         page.evaluate("() => document.body.dispatchEvent(new Event('refreshFeed'))")
-    settle(page, 300)
+    htmx_idle(page)
     assert page.evaluate("() => document.documentElement.classList.contains('inspector-open')")
     assert page.evaluate("() => !!document.activeElement.closest('#inspector')"), \
         session.where("focus stayed in the inspector")
@@ -427,7 +449,7 @@ def test_the_skip_link_reaches_the_feed_in_two_presses(session, viewport):
 def test_the_skip_link_works_after_the_feed_is_replaced(session, viewport):
     page = session.open("/")
     page.locator(".wallet__hit", has_text="Cold").click()
-    settle(page)
+    feed_answers(page)
     page.evaluate("() => document.activeElement.blur()")
     page.locator(".skip-link").focus()
     page.keyboard.press("Enter")
@@ -487,9 +509,10 @@ def test_the_wallet_form_submitted_the_moment_it_opens_goes_through_htmx(fresh_s
     submit_on_open(page, name="Early", address=REMOVABLE)
     page.locator(".add-wallet-link").click()
     page.wait_for_function("() => !document.getElementById('wallet-dialog')?.open")
-    settle(page, 800)
     assert page.locator("#wallet-dialog").count() == 1, session.where(
         f"the page was replaced by the fragment: {page.url}")
+    page.locator(".wallet__name", has_text="Early").wait_for()
+    htmx_idle(page)
     assert page.locator(".wallet__name", has_text="Early").count() == 1
     assert sent and all(hx == "true" for _, _, hx in sent), session.where(f"posts: {sent}")
 
@@ -499,7 +522,8 @@ def test_the_wallet_form_submitted_the_moment_it_opens_goes_through_htmx(fresh_s
     page.locator('summary[aria-label="Actions for Early"]').click()
     page.locator(".wallet__menu[open] button", has_text="Rename").click()
     page.wait_for_function("() => !document.getElementById('wallet-dialog')?.open")
-    settle(page, 800)
     assert page.locator("#wallet-dialog").count() == 1, session.where(page.url)
+    page.locator(".wallet__name", has_text="Renamed early").wait_for()
+    htmx_idle(page)
     assert page.locator(".wallet__name", has_text="Renamed early").count() == 1
     assert sent and all(hx == "true" for _, _, hx in sent), session.where(f"posts: {sent}")

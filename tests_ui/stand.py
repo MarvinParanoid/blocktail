@@ -248,7 +248,7 @@ class Stand:
         raise RuntimeError("the stand did not finish its first sync in 30 s")
 
     def _serve(self) -> None:
-        config = uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="warning",
+        config = uvicorn.Config(_with_latency(self.app), host="127.0.0.1", port=self.port, log_level="warning",
                                 access_log=False)
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(target=self._server.run, daemon=True)
@@ -289,6 +289,27 @@ class Stand:
 
     def account_id(self, name: str) -> int:
         return next(a.id for a in self.db.list_accounts() if a.name == name)
+
+
+def _with_latency(app):
+    """BLOCKTAIL_UI_LATENCY_MS=400 answers every htmx request that much later,
+    as a busy server would: each waits on its own, concurrently, so requests
+    overlap and arrive in the order the server finishes them. A test that
+    reads the page before the answer arrives fails here instead of only on a
+    slow runner. (Delaying in a Playwright route handler would not do: the
+    handler runs on the test's thread, so it serialises every request and
+    stalls the test itself.)"""
+    import os
+    delay = float(os.environ.get("BLOCKTAIL_UI_LATENCY_MS") or 0) / 1000
+    if not delay:
+        return app
+
+    async def delayed(scope, receive, send):
+        if scope["type"] == "http" and (b"hx-request", b"true") in scope["headers"]:
+            await asyncio.sleep(delay)
+        await app(scope, receive, send)
+
+    return delayed
 
 
 def _free_port() -> int:

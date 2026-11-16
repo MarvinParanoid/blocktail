@@ -10,7 +10,7 @@ whole suite is the wider smoke under the policy.
 from __future__ import annotations
 
 import pytest
-from conftest import CSP_LISTENER, DESKTOP, MOBILE, viewports
+from conftest import CSP_LISTENER, DESKTOP, MOBILE, feed_answers, htmx_idle, viewports
 from stand import REMOVABLE, Stand
 
 ROWS = "#feed-body tr[data-activity]"
@@ -18,11 +18,6 @@ POLICY = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
     "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 )
-
-
-def settle(page, ms: int = 600):
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(ms)
 
 
 @viewports(DESKTOP)
@@ -71,7 +66,7 @@ def test_every_control_works_under_the_policy_on_a_wide_screen(fresh_session, vi
     page.select_option("select[name=asset]", label="USDC")
     page.wait_for_function("() => location.search.includes('asset=')")
     page.select_option("select[name=asset]", value="")
-    settle(page)
+    feed_answers(page)
 
     # A row opens the inspector; its close button closes it.
     page.locator(ROWS).first.locator(".cell-party").click()
@@ -91,10 +86,10 @@ def test_every_control_works_under_the_policy_on_a_wide_screen(fresh_session, vi
     # The hidden-transfers note: Show, then Hide.
     page.locator("#dust-note button").click()
     page.wait_for_function("() => location.search.includes('dust=show')")
-    settle(page)
+    feed_answers(page)
     page.locator("#dust-note button").click()
     page.wait_for_function("() => !location.search.includes('dust=show')")
-    settle(page)
+    feed_answers(page)
 
     # The holdings panel folds and unfolds.
     page.locator(".summary__toggle").click()
@@ -128,7 +123,8 @@ def test_every_control_works_under_the_policy_on_a_wide_screen(fresh_session, vi
     page.fill("#wallet-dialog input[name=address]", REMOVABLE)
     page.keyboard.press("Enter")
     page.wait_for_function("() => !document.getElementById('wallet-dialog').open")
-    settle(page)
+    page.locator(".wallet__name", has_text="Removable").wait_for()
+    htmx_idle(page)
     assert page.locator(".wallet__name", has_text="Removable").count() == 1
 
     # Its menu: copy the address, rename it, then remove it.
@@ -145,18 +141,20 @@ def test_every_control_works_under_the_policy_on_a_wide_screen(fresh_session, vi
     page.fill("#wallet-dialog input[name=name]", "Renamed")
     page.keyboard.press("Enter")
     page.wait_for_function("() => !document.getElementById('wallet-dialog').open")
-    settle(page)
+    page.locator(".wallet__name", has_text="Renamed").wait_for()
+    htmx_idle(page)
     assert page.locator(".wallet__name", has_text="Renamed").count() == 1
     page.once("dialog", lambda dialog: dialog.accept())
     page.locator('summary[aria-label="Actions for Renamed"]').click()
     page.locator(".wallet__menu[open] .menu__danger").click()
-    settle(page, 1000)
+    page.locator(".wallet__name", has_text="Renamed").wait_for(state="detached")
+    htmx_idle(page)
     assert page.locator(".wallet__name", has_text="Renamed").count() == 0
 
     # A wallet chosen in the sidebar; its address copies from the summary.
     page.locator(".wallet__hit").first.click()
     page.wait_for_function("() => location.search.includes('wallet=')")
-    settle(page)
+    feed_answers(page)
     page.locator(".summary__addr").click()
     page.wait_for_function("() => document.querySelector('.summary__addr.is-copied')")
 
@@ -182,7 +180,7 @@ def test_every_control_works_under_the_policy_on_a_phone(session, viewport):
     page.wait_for_function("() => location.search.includes('q=Binance')")
     page.locator(".field-toggle--close").click()
     page.wait_for_function("() => !location.search.includes('q=')")
-    settle(page)
+    feed_answers(page)
 
     # The scope sheet: opened from the status bar, closed by the scrim.
     page.locator(".topline__scope").click()
@@ -238,7 +236,7 @@ def test_basic_auth_in_a_browser_under_the_policy(browser, guarded_stand):
         page.fill("#wallet-dialog input[name=address]", REMOVABLE)
         page.keyboard.press("Enter")
         page.wait_for_function("() => !document.getElementById('wallet-dialog').open")
-        settle(page)
+        page.locator(".wallet__name", has_text="Removable").wait_for()
         assert page.locator(".wallet__name", has_text="Removable").count() == 1
         assert not errors, errors
     finally:
