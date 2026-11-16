@@ -328,7 +328,11 @@ def load():
         return {"images": {}, "container": None, "volume": False, "calls": []}
 
 def save(s):
-    json.dump(s, open(STATE, "w"), indent=1)
+    # Atomically: the test reads this file without the lock, and open("w")
+    # empties it before the new state is written (a race seen on CI).
+    with open(STATE + ".tmp", "w") as out:
+        json.dump(s, out, indent=1)
+    os.replace(STATE + ".tmp", STATE)
 
 s = load(); args = sys.argv[1:]; s["calls"].append(CALLER + ": " + " ".join(args)); save(s)
 c = s["container"]
