@@ -1,0 +1,13 @@
+{# A number is never cut. When the exact text is too long for where it is
+   shown (a billion and up), the compact form is shown and the exact text is
+   rendered beside it: read out by a screen reader, in the tooltip for a
+   mouse, and — for a touch screen, where there is no hover — one tap away in
+   the inspector (a transfer) or the holdings sheet (a holding). #}
+{% macro figure(exact, compact, cls, raw=false) -%}
+  {%- set title = exact ~ (' — raw on-chain units, not valued' if raw else '') -%}
+  {%- if compact -%}
+    <span class="{{ cls }} is-compact" title="{{ title }}"><span aria-hidden="true">{{ compact }}</span><span class="sr-only">{{ exact }}</span></span>
+  {%- else -%}
+    <span class="{{ cls }}"{% if raw %} title="{{ title }}"{% endif %}>{{ exact }}</span>
+  {%- endif -%}
+{%- endmacro %}

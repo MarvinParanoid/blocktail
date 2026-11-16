@@ -52,6 +52,7 @@ stand and the test fails if one was attempted.
 | axe-core matches the known baseline | 1440, 390 |
 | Main controls reachable with Tab | 1440 |
 | Connection status (`test_connection.py`, below) | 1440, 390 |
+| Phones and money (`test_mobile_financial.py`, below) | 1440, 1024, 768, 430, 390, 360, 320 |
 | No JavaScript or console errors, no request leaves the stand | every test |
 
 The history test holds the stand's deep fetch behind a gate, so "running" is
@@ -75,6 +76,21 @@ declare exactly those messages (`session.expect_console_errors(...)`:
 `htmx:sendError` / `htmx:afterRequest`); any other console error still fails
 the test. A connection test takes 5–15 s, most of it waiting for polls.
 
+### Phones and money
+
+`test_mobile_financial.py` holds the page to one rule: a number is never cut.
+It checks, at every width from 1440 down to 320 (430 and 360 included), that
+no page — the dashboard, everything shown, the scam token's wallet, the
+long-named wallet — is wider than the screen; that no amount, value or total
+is clipped or ends in an ellipsis, with the inspector open or not; that a very
+large amount shown compactly in a row ("1×10³⁰") is read exactly in the
+inspector, one tap away, and is in the row's text for a screen reader; that
+the holdings sheet lists the holdings, scrolls, closes, and filters the feed
+by the one chosen; that the inspector's close button is on screen and works
+on every phone; that unknown decimals read "raw" and carry no USD; that an
+excluded asset or a forged ticker shows no made-up value; and that a drawer
+left open across a resize to desktop and back leaves nothing broken.
+
 ## Known defects
 
 These are open findings from [the audit](audit/product-audit.md). Each is a
@@ -84,14 +100,12 @@ so the marker is removed together with the defect.
 
 | Audit id | Test | What fails |
 | --- | --- | --- |
-| U-03 | `test_the_dashboard_has_no_horizontal_overflow[mobile-390]`, `[small-320]` | the NMT row's amount makes the page 51 px (390) and 120 px (320) wider than the screen |
-| U-03 | `test_the_inspector_close_button_is_on_screen_on_the_dashboard[mobile-390]` | the same overflow widens the layout, and the inspector's × lands past the right edge |
-| U-02 | `test_the_holdings_sheet_shows_its_assets[mobile-390]` | the sheet opens, but every item is hidden by CSS |
 | U-06 | `test_the_inspector_opens_from_the_keyboard[desktop-1440]` | feed rows do not take focus |
 | U-10 | `test_pasting_into_search_filters_the_feed[desktop-1440]` | an input with no keyup (a paste) does not search |
 
-U-03 is scoped by a passing test next to it: the same page without the NMT
-row fits a 390 and a 320 screen, and the inspector there closes normally.
+Fixed and since removed from this list, by the strict markers failing as
+designed: U-03 (overflow at 390 and 320, and the inspector's close button
+pushed off screen by it) and U-02 (the empty holdings sheet), both in S5.
 
 Accessibility (U-07) is a baseline rather than an xfail. `KNOWN_AXE` in
 `test_smoke.py` lists the axe-core rules reported today — `color-contrast`,

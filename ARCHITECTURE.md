@@ -62,6 +62,17 @@ how many tokens have been sent to the address — not something the owner
 controls. A row is two lines using the full width rather than desktop columns
 folded: who, then what moved. Everything an event says starts on one vertical.
 
+A number is never cut. Below a billion it is shown exactly; from a billion up
+a row shows it compactly — "12.3B", "4.56T", "1×10³⁰", three significant
+digits from exact Decimal arithmetic, never stored or summed — and renders the
+exact text beside it for a screen reader and the tooltip. On a touch screen
+the exact value is one tap away: the inspector states every amount of a
+transaction in full, wrapping a long one rather than clipping it, and the
+holdings sheet states every holding in full. The same rule holds in the feed,
+the folded rows, the summary strip and the sheet; the JSON API always carries
+the exact text. What gives way when space runs out is a name or a ticker, never
+a figure.
+
 ## The transaction inspector
 
 A feed is a list of transfers, which is the right unit for scanning: a swap

@@ -317,7 +317,7 @@ html.conn-lost .status::after { opacity: 0.55; }
   /* A scam token can hold 10^17 units. Grid children do not shrink below their
      content unless told to, so without min-width the number climbs over the
      next column instead of being clipped. */
-  grid-template-columns: minmax(0, 4.2em) minmax(0, 1fr) minmax(0, auto);
+  grid-template-columns: minmax(0, 4.2em) minmax(max-content, 1fr) auto;
   gap: 8px;
   align-items: baseline;
   padding: 3px 6px;
@@ -328,6 +328,12 @@ html.conn-lost .status::after { opacity: 0.55; }
 }
 .holding__hit:hover { background: var(--panel); text-decoration: none; }
 .holding__hit > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A number is never cut: the ticker gives way, the figures take what they
+   need. Very large ones arrive compact (see _macros.html), so "what they
+   need" is bounded. */
+.holding__hit > .holding__amount, .holding__hit > .holding__value {
+  overflow: visible; text-overflow: clip;
+}
 .holding__sym { color: var(--muted); }
 .holding--native .holding__sym { color: var(--text-hi); }
 /* A marker between items in the horizontal strip, where the eye needs to know
@@ -391,6 +397,12 @@ html.show-hidden-tokens .when-hidden { display: none; }
   gap: 10px;
 }
 .holdings--all { max-height: 52vh; overflow-y: auto; }
+/* The sheet is where a holding is read exactly, so its figures wrap rather
+   than run past the edge — the 34 digits of a scam token included. */
+.holdings--all .holding__hit { grid-template-columns: minmax(0, 4.6em) minmax(0, 1fr) auto; }
+.holdings--all .holding__hit > .holding__amount {
+  white-space: normal; overflow-wrap: anywhere; text-align: right;
+}
 .holding--muted .holding__sym,
 .holding--muted .holding__amount { color: var(--dim); }
 .detail__note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--dim); }
@@ -520,7 +532,8 @@ html.inspector-open .inspector { display: block; }
 }
 /* The row you came from, so the panel never loses its referent. */
 .xfer.is-current { border-left-color: var(--own); background: var(--panel-2); }
-.xfer__amount { display: flex; align-items: baseline; flex-wrap: wrap; }
+.xfer__amount { display: flex; align-items: baseline; flex-wrap: wrap; min-width: 0; }
+.xfer__amount .amount { overflow-wrap: anywhere; min-width: 0; }
 .xfer__amount .sym { margin-left: 5px; }
 .xfer__amount .fiat { margin-left: auto; padding-left: 10px; }
 .xfer__route {
@@ -968,7 +981,10 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 .time { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
 .cell-wallet { color: var(--text); }
-.pair { display: inline-flex; align-items: baseline; gap: 7px; color: var(--text-hi); white-space: nowrap; }
+.pair {
+  display: inline-flex; flex-wrap: wrap; align-items: baseline; column-gap: 7px;
+  max-width: 100%; color: var(--text-hi); overflow-wrap: anywhere;
+}
 .arrow { color: var(--own); }
 .row--between td, .row--self td { background: #0f141a; }
 .row--between:hover td, .row--self:hover td { background: var(--panel); }
@@ -1039,7 +1055,15 @@ html.inspector-open .cell-party { width: 42%; }
 
 /* Never clip the fiat: an amount whose value reads "$1,31…" is worse than no
    value at all. The amount itself wraps before either is truncated. */
-.cell-value { overflow: visible; white-space: nowrap; }
+/* `.feed td.cell-value`, not `.cell-value`: the general `.feed td` rule below
+   (overflow hidden, an ellipsis, no wrapping) is one class heavier and used to
+   win, which is how an amount came to read "123,456…". */
+.feed td.cell-value { overflow: visible; white-space: normal; text-overflow: clip; }
+/* Each part is an atomic inline, so the line may break between them — the
+   markup leaves no spaces there — while no part is ever broken itself. */
+.cell-value .amount, .cell-value .sym, .cell-value .fiat, .cell-value .kind {
+  display: inline-block; white-space: nowrap;
+}
 
 /* IN/OUT qualifies the amount, so it sits against it rather than trailing the
    wallet name across the empty half of its column. */
@@ -1063,7 +1087,7 @@ html.inspector-open .cell-party { width: 42%; }
 .block:hover { color: var(--accent); }
 
 /* Counterparty: the name filters the feed, the icon leaves for the explorer. */
-.party { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+.party { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; }
 .party > .label, .party > .addr { overflow: hidden; text-overflow: ellipsis; }
 /* A label answers "who"; the address behind it stays available without a click. */
 .party__addr { font-family: var(--mono); font-size: 11px; color: var(--dim); flex: none; }
@@ -1478,10 +1502,12 @@ html.inspector-open .cell-party { width: 42%; }
   .holdings__more { flex: 0 1 auto; order: 2; display: block; width: auto; }
   .holdings__age { order: 3; margin-left: auto; padding: 5px 14px 2px; }
 
-  .holdings > .holding:not(.holding--compact),
-  .holdings .holding--more { display: none; }
-  /* ...except in the sheet, which is where the rest went. */
-  .holdings--all > .holding { display: block; }
+  /* The strip only — never the sheet, which is where the rest went. This
+     rule used to read `.holdings > .holding:not(…)`, which also matches the
+     sheet's list (it is `.holdings.holdings--all`) and outweighed the rule
+     meant to show it (0,3,0 against 0,2,0): the sheet opened empty. */
+  .holdings:not(.holdings--all) > .holding:not(.holding--compact),
+  .holdings:not(.holdings--all) .holding--more { display: none; }
 
   /* Read as a table rather than a strip, the tickers are a column and have to
      be as legible as the numbers beside them. */
@@ -1489,7 +1515,7 @@ html.inspector-open .cell-party { width: 42%; }
   /* Each holding is its own grid, so an `auto` value column makes every row
      size differently and the amounts stop lining up — which is the one thing
      a column of numbers is for. Fixed width, and they align. */
-  .holding__hit { grid-template-columns: minmax(0, 4.6em) minmax(0, 1fr) 6.6em; }
+  .holding__hit { grid-template-columns: minmax(0, 4.6em) minmax(max-content, 1fr) minmax(6.6em, max-content); }
 
   .cell-value { display: flex; align-items: baseline; flex-wrap: wrap; }
   .row[data-activity] .amount { font-size: 13.5px; }

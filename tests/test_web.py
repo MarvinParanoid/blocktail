@@ -2071,8 +2071,12 @@ def test_the_portfolio_header_has_a_fixed_height_on_a_phone(client):
     css = pathlib.Path("app/web/static/app.css").read_text()
     narrow = css.split("@media (max-width: 860px) {")[1]
 
-    assert ".holdings > .holding:not(.holding--compact)," in narrow
-    assert ".holdings--all > .holding { display: block; }" in narrow, "the sheet shows all"
+    assert ".holdings:not(.holdings--all) > .holding:not(.holding--compact)," in narrow
+    # Unscoped, the rule also matched the sheet's list and outweighed the rule
+    # meant to show it: the sheet opened empty (U-02). The browser tests check
+    # the sheet itself; this keeps the selector from regressing.
+    rules = re.sub(r"/\*.*?\*/", "", narrow, flags=re.DOTALL)
+    assert ".holdings > .holding:not(" not in rules
 
 
 def test_the_native_balance_is_not_said_twice_on_a_phone(client):
@@ -2109,11 +2113,13 @@ def test_everything_held_is_a_tap_away(client):
 
 def test_a_row_of_numbers_lines_up(client):
     """Each holding is its own grid, so an `auto` value column sizes every row
-    differently and the amounts stop lining up."""
+    differently and the amounts stop lining up. The value column has a fixed
+    minimum, so ordinary values line up — and no figure column can shrink
+    below its content, so none is ever cut (U-04)."""
     css = pathlib.Path("app/web/static/app.css").read_text()
     narrow = css.split("@media (max-width: 860px) {")[1]
 
-    assert "minmax(0, 4.6em) minmax(0, 1fr) 6.6em" in narrow
+    assert "minmax(0, 4.6em) minmax(max-content, 1fr) minmax(6.6em, max-content)" in narrow
 
 
 def test_the_scope_class_is_kept_in_step_with_the_feed(client):
@@ -2222,3 +2228,21 @@ def test_the_page_has_one_connection_notice_outside_the_polled_fragment(client):
     assert page.count('id="connection"') == 1 and page.count('id="status-live"') == 1
     topline = client.get("/status").text
     assert 'id="connection"' not in topline and 'id="status-live"' not in topline
+
+
+def test_the_json_api_keeps_exact_amounts(client, provider):
+    """Compact figures are for the page; the API carries the exact text."""
+    from app.models import AssetRef
+
+    big = AssetRef("ethereum", "0x" + "7" * 40, "BIG", 18)
+    provider.head_block += 1
+    provider.transfers.append(transfer("big", sender=STRANGER, recipient=MAIN,
+                                       amount=10**30 * 10**18, asset=big,
+                                       kind=TransferKind.TOKEN, log_index=1,
+                                       block=provider.head_block - 1))
+    run(client.ctx.indexer.run_once())
+    rows = client.get("/api/activity", params={"dust": "show"}).json()["activities"]
+    row = next(r for r in rows if r["asset"]["symbol"] == "BIG")
+    assert row["amount"] == "1,000,000,000,000,000,000,000,000,000,000"
+    page = client.get("/activity", params={"dust": "show"}).text
+    assert "1×10³⁰" in page and row["amount"] in page, "compact, with the exact text beside it"
