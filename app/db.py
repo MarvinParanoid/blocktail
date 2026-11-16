@@ -460,18 +460,35 @@ class Database:
                 raise
         return inserted
 
-    def known_event_keys(self, chain_id: str, from_block: int, to_block: int) -> set[str]:
-        """Events in a block range that a re-scan of the *active* accounts is
-        expected to report again. A removed wallet is not scanned, so its
-        events are not candidates for pruning: absent from a scan that never
-        looked is not the same as reorged out."""
+    def prunable_event_keys(
+        self, chain_id: str, windows: dict[int, int], head: int
+    ) -> set[str]:
+        """Events some active wallet was responsible for re-checking this cycle.
+
+        ``windows`` maps an account id to the first block of its reorg window;
+        each window runs to ``head``. An event qualifies when one of its ends
+        is such an account and its block lies inside that account's window.
+        One indexed range scan over the union of the windows, and the
+        per-account test in SQL — not a query per wallet.
+
+        The account columns only ever name active accounts (relink_accounts),
+        so a removed wallet's history is never a candidate: it was not scanned.
+        """
+        if not windows:
+            return set()
+        values = ", ".join("(?, ?)" for _ in windows)
+        params: list[int | str] = [v for pair in windows.items() for v in pair]
+        params += [chain_id, min(windows.values()), head]
         return {
             row[0]
             for row in self.connect().execute(
-                "SELECT event_key FROM activities a"
+                f"WITH win(account_id, from_block) AS (VALUES {values})"
+                " SELECT a.event_key FROM activities a"
                 " WHERE a.chain_id = ? AND a.block_number BETWEEN ? AND ?"
-                f" AND {_VISIBLE}",
-                (chain_id, from_block, to_block),
+                "   AND EXISTS (SELECT 1 FROM win"
+                "     WHERE a.block_number >= win.from_block"
+                "       AND win.account_id IN (a.from_account_id, a.to_account_id))",
+                params,
             )
         }
 
