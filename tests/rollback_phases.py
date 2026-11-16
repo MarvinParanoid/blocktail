@@ -106,6 +106,7 @@ VOLATILE = [
     (re.compile(r"\b1[0-9]{9}\b"), "<ts>"),                       # unix times
     (re.compile(r"\b\d+\s*(s|sec|min|m|h|d)\s+ago\b"), "<ago>"),
     (re.compile(r"just now|moments? ago"), "<ago>"),
+    (re.compile(r"(?<![\w.,])\d+(s|m|h|d)\b"), "<age>"),       # "prices · 0s"
     (re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?"), "<dt>"),
     (re.compile(r"\b\d{1,2}:\d{2}(:\d{2})?\b"), "<hm>"),
 ]
