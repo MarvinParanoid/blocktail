@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -154,10 +155,22 @@ def _start_session(browser, request, stand: Stand, viewport: Viewport) -> Sessio
     context.expose_binding("__blocktailCsp", lambda source, text: errors.append(f"csp: {text}"))
     context.add_init_script(CSP_LISTENER)
     page = context.new_page()
+    # BLOCKTAIL_UI_CPU_SLOWDOWN=4 runs the page on a quarter of the CPU, as on
+    # a slow CI runner: a test that only passes on a fast machine shows here.
+    slowdown = float(os.environ.get("BLOCKTAIL_UI_CPU_SLOWDOWN") or 1)
+    if slowdown > 1:
+        context.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": slowdown})
     session = Session(page=page, context=context, stand=stand, viewport=viewport, errors=errors)
+
+    # BLOCKTAIL_UI_LATENCY_MS=400 holds every htmx request that long before it
+    # reaches the stand, as a busy server would: a test that reads the page
+    # before the answer arrives fails here instead of only on a slow runner.
+    latency = float(os.environ.get("BLOCKTAIL_UI_LATENCY_MS") or 0) / 1000
 
     def offline(route):
         if route.request.url.startswith(stand.url):
+            if latency and route.request.resource_type in ("xhr", "fetch"):
+                time.sleep(latency)
             route.continue_()
         else:
             session.blocked.append(route.request.url)

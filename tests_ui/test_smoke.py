@@ -40,9 +40,21 @@ def overflow(page, viewport) -> int:
     return width - viewport.width
 
 
+HTMX_BUSY = "() => !document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')"
+
+
 def wait_for_feed(page):
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(150)
+    """Until htmx has nothing in flight and nothing settling — then once more
+    after a pause, for what an answer sets off (the sidebar after the feed).
+
+    Not networkidle: that is a load state, reached once when the page loaded,
+    so it returns at once for every htmx request after it. On a slow runner
+    the answer came after the old fixed 150 ms and the test read the old feed
+    (RC1; reproduce with BLOCKTAIL_UI_LATENCY_MS=400)."""
+    for _ in range(2):
+        page.wait_for_function(HTMX_BUSY)
+        page.wait_for_timeout(150)
+    page.wait_for_function(HTMX_BUSY)
 
 
 # ------------------------------------------------------- pages and layout
