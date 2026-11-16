@@ -261,7 +261,7 @@ class Indexer:
         result.fetched = len(transfers)
         result.stored = await asyncio.to_thread(self.db.store_transfers, transfers)
         result.pruned = await asyncio.to_thread(
-            self._prune, transfers, self._prune_from(starts, from_block), head
+            self._prune, transfers, self._prune_windows(accounts, starts, head), head
         )
 
         # Indexing is done and complete: what was read is stored, and the
@@ -397,40 +397,47 @@ class Indexer:
         asset = transfer.asset
         return (asset.chain_id, asset.contract_address) in self.config.ignore_assets
 
-    @staticmethod
-    def _prune_from(starts: dict[int, int], from_block: int) -> int:
-        """The first block of the range every active wallet was re-scanned over
-        this cycle, which is what makes it authoritative.
+    def _prune_windows(
+        self, accounts: list[Account], starts: dict[int, int], head: int
+    ) -> dict[int, int]:
+        """For each wallet, the first block of the range it is responsible for
+        re-checking this cycle; the range runs to the head.
 
-        Normally that is ``from_block``: the last synced block, less the reorg
-        depth. After a downtime it is still that — everything since the last
-        success was re-read, so an event a reorg removed while nobody was
-        looking is caught. It is never earlier: a wallet reaching back for
-        older history is reading settled blocks, and a provider that stops
-        serving old history must not be able to erase settled records. And
-        when a wallet started later than the rest (new, after a downtime
-        longer than the backfill window), only the part all of them covered
-        counts.
+        A wallet's reorg window starts REORG_DEPTH below where *it* was last
+        synced — after a downtime, that covers everything since — clipped to
+        where its scan actually started. Windows are per wallet, so a wallet
+        that started elsewhere (new, re-added, or reaching back) changes no
+        one else's.
+
+        A wallet that was never synced has no window: everything it reads is
+        settled history, read for the first time. Neither does the part of a
+        scan below a wallet's own window — a deep history request reads
+        settled blocks, and a provider that stops serving old history must not
+        be able to erase settled records.
         """
-        return max(from_block, max(starts.values(), default=from_block))
+        windows: dict[int, int] = {}
+        for account in accounts:
+            if account.synced_to_block is None:
+                continue
+            first = max(
+                0,
+                starts[account.id],
+                account.synced_to_block - self.settings.reorg_depth + 1,
+            )
+            if first <= head:
+                windows[account.id] = first
+        return windows
 
-    def _prune(self, transfers: list[Transfer], prune_from: int, head: int) -> int:
-        """Delete events in the re-scanned range that the chain no longer
-        reports. Only events with an active end are candidates (see
-        Database.known_event_keys): a removed wallet was not scanned."""
-        if prune_from > head:
-            return 0
-        observed = {
-            transfer.event_key
-            for transfer in transfers
-            if prune_from <= transfer.block_number <= head
-        }
-        known = self.db.known_event_keys(self.chain_id, prune_from, head)
-        stale = known - observed
+    def _prune(self, transfers: list[Transfer], windows: dict[int, int], head: int) -> int:
+        """Delete events that a wallet responsible for them re-scanned and the
+        chain no longer reports. "Reported" is any scan this cycle: a shared
+        event that either side still returns is kept."""
+        observed = {transfer.event_key for transfer in transfers}
+        stale = self.db.prunable_event_keys(self.chain_id, windows, head) - observed
         if not stale:
             return 0
         log.info(
-            "pruning %d event(s) no longer on chain in blocks %s-%s", len(stale), prune_from, head
+            "pruning %d event(s) no longer on chain, up to block %s", len(stale), head
         )
         return self.db.drop_activities(self.chain_id, stale)
 

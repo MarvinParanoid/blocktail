@@ -279,16 +279,22 @@ mirror image from the other side — without any of them being special-cased.
 
 ### Reorgs
 
-Each cycle re-reads from `REORG_DEPTH` blocks (default 64, ~13 minutes) below
-the last successfully synced block up to the head. Within that range the
-fresh scan is authoritative for every monitored wallet, so any stored event the
-chain no longer reports is deleted. After a downtime the range simply reaches
-further — everything since the last success was re-read, so a reorg that
-happened while nobody was looking is caught. It never reaches further than
-that: a wallet catching up on older history is reading settled blocks, and a
-provider that stops serving old history must not be able to erase settled
-records. When one wallet started later than the rest (new, after a downtime
-longer than the backfill window), only the part every wallet covered counts.
+Each wallet is re-read from `REORG_DEPTH` blocks (default 64, ~13 minutes)
+below where *that wallet* was last synced, up to the head. That range is the
+wallet's reorg window, and within it the fresh scan is authoritative: a stored
+event the chain no longer reports is deleted. After a downtime the window
+simply reaches further — everything since the last success was re-read, so a
+reorg that happened while nobody was looking is caught.
+
+Windows are per wallet. An event may be deleted when it is absent from every
+scan of the cycle *and* one of its active ends had the event's block inside its
+own window; a shared event that either side still reports stays. A wallet that
+starts elsewhere — new, re-added, reaching back for older history — changes no
+other wallet's window. A wallet read for the first time has no window at all,
+and neither does the part of a scan below a wallet's window: those blocks are
+settled history, and a provider that stops serving old history must not be
+able to erase settled records. The candidates come from one indexed range
+query with the per-wallet test in SQL (`Database.prunable_event_keys`).
 
 Pruning runs **only after the transfers of every wallet were fetched.** If any
 wallet's fetch fails, the others are cancelled, the cycle records the error,
