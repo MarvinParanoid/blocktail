@@ -37,7 +37,41 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install ruff==0.14.5
-      - run: ruff check --select F,E9 app tests
+      - run: ruff check --select F,E9 app tests tests_ui
+
+  # The page in a real browser, against a local stand with synthetic data: an
+  # in-memory provider, a temporary SQLite database, no secrets. Nothing the
+  # tests run reaches the network — the stand's pages abort any request that
+  # is not for the stand itself. Known defects are strict xfails (see
+  # docs/ui-tests.md); screenshots, traces and logs are kept when it fails.
+  ui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      BLOCKTAIL_UI_ARTIFACTS: ${{ github.workspace }}/ui-artifacts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: pip install -r requirements-dev.txt -r requirements-ui.txt
+
+      - run: python -m playwright install --with-deps --only-shell chromium
+
+      - run: python -m pytest tests_ui -p no:cacheprovider -rxX
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ui-smoke-artifacts
+          path: ui-artifacts/
+          retention-days: 7
+          if-no-files-found: ignore
 
   image:
     runs-on: ubuntu-latest

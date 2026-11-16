@@ -451,6 +451,18 @@ provider failure), the provider's parsing against recorded Alchemy payloads, the
 HTTP layer (filters, search, pagination, status states) and configuration
 validation. It needs no API key and makes no network calls.
 
+Browser smoke tests drive the page in Chromium against a local stand with
+synthetic data — no network either:
+
+```bash
+.venv/bin/pip install -r requirements-ui.txt
+.venv/bin/python -m playwright install --only-shell chromium
+.venv/bin/python -m pytest tests_ui -rxX
+```
+
+What they cover, the known defects they expect, and how to read a failure:
+[docs/ui-tests.md](docs/ui-tests.md).
+
 [ARCHITECTURE.md](ARCHITECTURE.md) covers the provider choice and its
 limitations, the schema, and how events are normalized and deduplicated.
 
