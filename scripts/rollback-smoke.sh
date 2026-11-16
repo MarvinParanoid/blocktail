@@ -25,6 +25,7 @@
 #      both wallets, and reads and writes the migrated database;
 #   5. a deploy of HEAD again reuses its image and keeps all three.
 #
+# It needs root for the server half (sudo when not root), as the server does.
 # Nothing leaves the machine: the provider URL is a closed port, prices are
 # off, every secret is a canary made up here. Everything it made is removed.
 set -euo pipefail
@@ -88,8 +89,12 @@ wait_healthy() {
   done
   fail "the container did not become healthy (last state: ${state:-none})"
 }
-remote_deploy() {  # <args>: the server half, from the release as deploy.sh ships it
-  BLOCKTAIL_REMOTE="$REMOTE" bash "$RELEASE_SCRIPTS/remote-deploy.sh" "$@"
+# The server half, from the release as deploy.sh ships it, and as root, the
+# way it runs on the server: it hands backups/ to the app's uid with chown.
+AS_ROOT=()
+[ "$(id -u)" = "0" ] || AS_ROOT=(sudo --preserve-env=PATH)
+remote_deploy() {  # <args>
+  "${AS_ROOT[@]}" env BLOCKTAIL_REMOTE="$REMOTE" bash "$RELEASE_SCRIPTS/remote-deploy.sh" "$@"
 }
 schema() {
   docker exec "$CONTAINER" python -c "import sqlite3
