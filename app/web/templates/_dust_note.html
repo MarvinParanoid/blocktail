@@ -7,7 +7,7 @@
    hx-swap="outerHTML">
   {% if filters.show_dust %}
     Showing dust and unverified token transfers.
-    <button type="button" class="linkish" onclick="toggleDust(false)">Hide</button>
+    <button type="button" class="linkish" data-action="toggle-dust" data-show="false">Hide</button>
   {% elif hidden_total %}
     {# Two reasons, named separately: dust is small, unverified is unknown, and
        a 0.87 ETH transfer is neither. #}
@@ -20,6 +20,6 @@
       {%- if dust_hidden and unverified_hidden %} · {% endif -%}
       {%- if unverified_hidden %}{{ '{:,}'.format(unverified_hidden) }} unverified{% endif -%}
     </span>
-    <button type="button" class="linkish" onclick="toggleDust(true)">Show</button>
+    <button type="button" class="linkish" data-action="toggle-dust" data-show="true">Show</button>
   {% endif %}
 </p>

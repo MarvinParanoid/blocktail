@@ -55,7 +55,8 @@ stand and the test fails if one was attempted.
 | Search, filters, wallet events, skip link (`test_interaction.py`, below) | 1440, 768, 390, 320 |
 | Connection status (`test_connection.py`, below) | 1440, 390 |
 | Phones and money (`test_mobile_financial.py`, below) | 1440, 1024, 768, 430, 390, 360, 320 |
-| No JavaScript or console errors, no request leaves the stand | every test |
+| No JavaScript or console errors, no CSP violation, no request leaves the stand | every test |
+| Served under the CSP; inline script refused; every former `onclick` control works; basic auth in a browser (`test_security.py`) | 1440, 390 |
 
 The history test holds the stand's deep fetch behind a gate, so "running" is
 observable, then opens it.

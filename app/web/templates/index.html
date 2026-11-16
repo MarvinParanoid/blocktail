@@ -5,7 +5,7 @@
 {# The first Tab stop: past the status bar, the summary, the sidebar and the
    filters, straight to the current row of the feed. #}
 <a class="skip-link" href="#feed-body">Skip to activity</a>
-<div class="scrim" onclick="closeSheets()" hidden></div>
+<div class="scrim" data-action="close-sheets" hidden></div>
 
 <div class="app">
 <header class="topbar">
@@ -34,7 +34,7 @@
   <section class="feed-panel">
     {# The one way the feed is asked for again: every filter, the sidebar, the
        summary, a counterparty and a wallet change come through this form (see
-       pick() and applyFilters() in _behaviour.html), so the address bar and the
+       pick() and applyFilters() in static/app.js), so the address bar and the
        hidden-transfers note follow all of them.
 
        Search answers `input` — typing, a paste by key or by menu, the native
@@ -42,13 +42,12 @@
        question. hx-sync "queue last": while one request is in flight the
        newest question waits its turn (none is dropped, none aborted), and an
        answer to a question no longer asked is not swapped in (feedQuestion in
-       _behaviour.html). #}
+       static/app.js). #}
     <form id="filters" class="filters"
           hx-get="/activity" hx-target="#feed-body" hx-swap="innerHTML"
-          hx-trigger="change[event.target.id !== 'search'], input changed delay:300ms from:#search, filters-changed, refreshFeed from:body"
+          hx-trigger="input changed delay:300ms from:#search, filters-changed, refreshFeed from:body"
           hx-sync="this:queue last"
-          hx-indicator="#topline" hx-on::after-request="onFiltered(event)"
-          onsubmit="return false">
+          hx-indicator="#topline">
 
       {# Neither the wallet nor the scope has a control of its own: the sidebar
          is that control, and these carry its choice into the form. #}
@@ -98,7 +97,7 @@
          earn every pixel above the feed, and it is the control used least
          often. So it collapses to a button and takes the whole bar when it is
          actually wanted. Neither button exists on a wide screen. #}
-      <button type="button" class="field-toggle field-toggle--open" onclick="toggleSearch(true)"
+      <button type="button" class="field-toggle field-toggle--open" data-action="open-search"
               aria-label="Search" title="Search">
         <svg viewBox="0 0 14 14" aria-hidden="true">
           <circle cx="6" cy="6" r="4.2"/><path d="M9.2 9.2 12.6 12.6"/>
@@ -111,7 +110,7 @@
                placeholder="address, tx hash or label" autocomplete="off" spellcheck="false">
         {# On the right, where a search box's clear control lives, rather than
            a back arrow on the left that reads as page navigation. #}
-        <button type="button" class="field-toggle field-toggle--close" onclick="closeSearch()"
+        <button type="button" class="field-toggle field-toggle--close" data-action="close-search"
                 aria-label="Close search">&times;</button>
       </label>
 
@@ -159,5 +158,7 @@
 </dialog>
 
 
-{% include "_behaviour.html" %}
+{# Last, as before: it wires up what is above it. A file, not inline — the
+   CSP allows script from this origin only. #}
+<script src="{{ static_url('app.js') }}"></script>
 {% endblock %}

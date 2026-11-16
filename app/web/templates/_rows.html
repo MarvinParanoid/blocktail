@@ -34,17 +34,16 @@
   {% endif %}
 
   {% set own = activity.direction in ('between', 'self') %}
-  {# Clicking the row opens the transaction behind it. The filter and explorer
-     links inside are excluded by the trigger filter rather than by a
-     stopPropagation on each one — one rule instead of five. #}
+  {# Clicking the row opens the transaction behind it: static/app.js fires
+     open-row unless the click was on a filter or explorer link inside — one
+     rule there rather than a stopPropagation on each. #}
   <tr class="row row--{{ activity.direction }}{{ ' row--folded' if not is_lead }}"
       data-activity="{{ activity.id }}" data-tx="{{ activity.tx_hash }}"
       hx-get="/tx/{{ activity.id }}" hx-target="#inspector-body" hx-swap="innerHTML"
-      hx-trigger="click[!event.target.closest('a,button:not(.row__open)')]"
-      hx-on::after-request="openInspector(this)">
+      hx-trigger="open-row">
     {# The row's one control for the keyboard: a real button, so Enter and Space
        work as they do anywhere. Only one row's button is in the Tab order at a
-       time (see the feed keyboard in _behaviour.html); the arrows move it. #}
+       time (see the feed keyboard in static/app.js); the arrows move it. #}
     <td class="cell-time"><button type="button" class="row__open" tabindex="-1"
         ><span class="time" title="{{ activity.iso }}">{{ activity.time_text }}</span
         ><span class="sr-only"> — open transaction</span></button></td>
@@ -116,7 +115,7 @@
     <tr class="row row--more-of{{ ' row--single-more' if group.extra == 1 }}"
         data-tx="{{ activity.tx_hash }}">
       <td colspan="7">
-        <button type="button" class="foldout" onclick="toggleFold(this)"
+        <button type="button" class="foldout" data-action="toggle-fold"
                 aria-expanded="false">
           {# Not "+": beside an amount that reads as an instruction to add
              0.36804 to the 200 above it, which is the one thing this feed

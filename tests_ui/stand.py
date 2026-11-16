@@ -180,7 +180,8 @@ def _balances() -> dict:
 class Stand:
     """Start it, use ``url``, stop it. One per test session."""
 
-    def __init__(self, workdir: Path):
+    def __init__(self, workdir: Path, **settings_overrides):
+        """``settings_overrides`` go to make_settings — basic auth, for one."""
         self.workdir = workdir
         self.now = int(time.time())
         self.provider = GatedProvider(
@@ -203,6 +204,7 @@ class Stand:
             stale_after=3600,
             price_refresh=3600,
             balance_refresh=3600,
+            **settings_overrides,
         )
         config = make_config(wallets=WALLETS, labels={BINANCE: "Binance hot"},
                              trusted_assets=[MYSTERY.contract_address])

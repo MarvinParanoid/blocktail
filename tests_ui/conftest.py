@@ -4,7 +4,8 @@ Every page:
 
 * runs against a local stand (tests_ui/stand.py), never the network — any
   request that is not for the stand is aborted and reported;
-* collects JavaScript errors and console errors, and fails the test on any;
+* collects JavaScript errors, console errors and CSP violations, and fails
+  the test on any;
 * records a Playwright trace, kept with a screenshot and the server log when
   the test fails, under $BLOCKTAIL_UI_ARTIFACTS (default tests_ui/artifacts).
 
@@ -32,6 +33,20 @@ from stand import Stand
 HERE = Path(__file__).resolve().parent
 ARTIFACTS = Path(os.environ.get("BLOCKTAIL_UI_ARTIFACTS", HERE / "artifacts"))
 AXE = HERE / "vendor" / "axe-core-4.10.2" / "axe.min.js"
+
+# What a script — not the page — sends with a write: it has no fetch metadata
+# to prove where it came from, so it says it is a client of this app the way
+# curl would (see app/security.py).
+SCRIPT = {"HX-Request": "true"}
+
+# Every CSP violation in any document of the context, reported as an error:
+# init scripts and bindings run outside the page's policy.
+CSP_LISTENER = """
+document.addEventListener('securitypolicyviolation', (e) => {
+  window.__blocktailCsp(e.effectiveDirective + ' refused ' + (e.blockedURI || 'inline')
+    + ' (' + (e.sourceFile || 'page') + ':' + e.lineNumber + ')');
+});
+"""
 
 
 @dataclass(frozen=True)
@@ -135,8 +150,11 @@ def _start_session(browser, request, stand: Stand, viewport: Viewport) -> Sessio
         locale="en-US",
     )
     context.tracing.start(screenshots=True, snapshots=True)
+    errors: list[str] = []
+    context.expose_binding("__blocktailCsp", lambda source, text: errors.append(f"csp: {text}"))
+    context.add_init_script(CSP_LISTENER)
     page = context.new_page()
-    session = Session(page=page, context=context, stand=stand, viewport=viewport)
+    session = Session(page=page, context=context, stand=stand, viewport=viewport, errors=errors)
 
     def offline(route):
         if route.request.url.startswith(stand.url):
@@ -193,7 +211,9 @@ def fresh_session(browser, request, fresh_stand, viewport):
 
 def run_axe(page) -> dict[str, list[str]]:
     """axe-core violations on the current page: rule id -> impacts of its nodes."""
-    page.add_script_tag(path=str(AXE))
+    # Evaluated, not added as a <script>: the page's CSP refuses inline script,
+    # and rightly — the test tool is not an exception the app should make.
+    page.evaluate(AXE.read_text(encoding="utf-8"))
     result = page.evaluate(
         "async () => (await axe.run(document, {resultTypes: ['violations']})).violations"
         ".map(v => [v.id, v.impact, v.nodes.length])"

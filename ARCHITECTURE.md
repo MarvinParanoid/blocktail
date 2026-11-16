@@ -591,6 +591,18 @@ counterparties beats ours.
 
 ---
 
+## HTTP security
+
+The web layer has four writes (add, edit and remove a wallet; ask for older
+history) and nothing else that changes state. One middleware decides where a
+request may come from — a write only from this page, by `Sec-Fetch-Site` or,
+without it, `HX-Request` — and the outermost one puts the same headers on
+every answer: a CSP with no inline script, no inline style and no eval, no
+framing, `no-store`. The page's script is two static files, `boot.js` and
+`app.js`; controls name an action (`data-action`) instead of carrying an
+`onclick`. No session, cookie or token exists. See
+[docs/security.md](docs/security.md).
+
 ## Chain neutrality
 
 Only Ethereum is implemented, and no plugin framework exists. What is deliberate

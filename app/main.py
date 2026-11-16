@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import sys
@@ -26,6 +27,7 @@ from app.config import (
 from app.db import Database
 from app.prices import PriceSource
 from app.redact import install_log_redaction, register_secret
+from app.security import OriginCheckMiddleware, SecurityHeadersMiddleware
 from app.sync import Indexer
 from app.web.routes import router
 
@@ -119,6 +121,10 @@ def protect_secrets(settings: Settings) -> None:
     if not settings.alchemy_api_key:
         register_secret(settings.alchemy_url)
     register_secret(settings.auth_password)
+    if settings.auth_enabled:
+        # What actually travels: the Authorization header's value.
+        token = f"{settings.auth_user}:{settings.auth_password}".encode()
+        register_secret(base64.b64encode(token).decode())
     install_log_redaction()
 
 
@@ -190,8 +196,14 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        # A slash redirect is built from the Host header; no URL this app
+        # serves ends in one, so there is nothing to redirect.
+        redirect_slashes=False,
     )
     app.state.ctx = ctx
+    # Starlette runs the last one added first. Outermost to innermost:
+    # headers (and Host) on every answer -> credentials -> where it came from.
+    app.add_middleware(OriginCheckMiddleware)
     if settings.auth_enabled:
         app.add_middleware(
             BasicAuthMiddleware,
@@ -204,6 +216,7 @@ def create_app(
             "no AUTH_USER/AUTH_PASSWORD set: this instance is open to anyone who"
             " can reach it — put it behind a proxy or a tailnet"
         )
+    app.add_middleware(SecurityHeadersMiddleware, allowed_hosts=settings.allowed_hosts)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(router)
     return app

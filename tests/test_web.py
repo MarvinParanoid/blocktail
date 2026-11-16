@@ -133,8 +133,11 @@ def test_is_read_only_and_leaks_no_secrets(client):
     assert "alchemy" not in body
     assert client.ctx.settings.alchemy_url not in client.get("/").text
     assert client.get("/api/status").text.find("alchemy_url") == -1
+    # Asked from the page itself (another site is refused before routing):
+    # nothing at / takes a write.
     for method in ("post", "put", "delete", "patch"):
-        assert getattr(client, method)("/").status_code in (404, 405)
+        response = getattr(client, method)("/", headers={"sec-fetch-site": "same-origin"})
+        assert response.status_code in (404, 405)
 
 
 # -------------------------------------------------------------------- filters
@@ -591,7 +594,7 @@ def test_dust_is_hidden_but_reachable(client):
     body = client.get("/summary").text
 
     assert "1 hidden" in body
-    assert "toggleHiddenTokens()" in body
+    assert 'data-action="toggle-hidden-tokens"' in body
     assert "when-hidden" in body, "and it reads as something to press"
 
     # And it belongs to the token count, not to the total: under TOTAL VALUE it
@@ -623,7 +626,7 @@ def test_the_collapsed_summary_is_one_line(client):
     body = client.get("/summary").text
     assert 'class="summary__brief"' in body
     assert 'class="summary__body"' in body
-    assert "toggleSummary()" in client.get("/").text
+    assert 'data-action="toggle-summary"' in client.get("/").text
 
 
 def test_valuation_absent_is_stated_not_faked(settings, watch_config, provider, sample_transfers):
@@ -1173,17 +1176,20 @@ def test_the_narrow_layout_is_not_a_squeezed_desktop(client):
     assert "grid-template-areas" in narrow, "rows are laid out, not tabulated"
     assert ".cell-tx, .cell-fill { display: none; }" in narrow
 
-    base = pathlib.Path("app/web/templates/base.html").read_text()
-    assert "max-width: 860px" in base, "the summary starts collapsed on a narrow screen"
+    boot = pathlib.Path("app/web/static/boot.js").read_text()
+    assert "max-width: 860px" in boot, "the summary starts collapsed on a narrow screen"
+    assert "static/boot.js" in client.get("/").text, "and it runs before first paint"
 
 
 def test_a_row_is_clickable_without_swallowing_its_links(client):
     """The row opens the transaction; the links inside it keep their own jobs.
-    One trigger filter does that, rather than a stopPropagation on each link."""
+    One rule in static/app.js does that, rather than a stopPropagation on each link."""
     body = client.get("/activity").text
     # The row's own open button (its time, the keyboard's way in) is the one
     # button that does not opt out.
-    assert "click[!event.target.closest('a,button:not(.row__open)')]" in body
+    assert 'hx-trigger="open-row"' in body
+    behaviour = pathlib.Path("app/web/static/app.js").read_text()
+    assert "if (evt.target.closest('a, button:not(.row__open)')) return;" in behaviour
     assert 'hx-get="/tx/' in body
     assert 'class="row__open"' in body
 
@@ -1478,7 +1484,7 @@ def test_dust_transfers_are_out_of_the_feed_by_default(dusty_client):
 def test_the_feed_says_how_much_it_is_hiding(dusty_client):
     body = dusty_client.get("/").text
     assert "2 noisy transfers hidden" in body and "2 dust" in body
-    assert "toggleDust(true)" in body
+    assert 'data-action="toggle-dust" data-show="true"' in body
 
 
 def test_dust_can_be_shown(dusty_client):
@@ -1554,7 +1560,7 @@ def test_the_open_wallet_address_can_be_copied(client):
     account = next(a for a in client.ctx.db.list_accounts() if a.id == cold)
 
     assert full.lower() == account.address, "the whole address, not the shortened one"
-    assert "copyAddress(" in button
+    assert 'data-action="copy-address"' in button
     assert "…" in button, "and the short form is what is displayed"
 
 
@@ -1565,7 +1571,7 @@ def test_the_summary_has_no_address_to_copy_when_nothing_is_selected(client):
 def test_copying_says_so_when_the_clipboard_is_unavailable(client):
     """navigator.clipboard needs a secure context; over plain HTTP it is simply
     absent, and failing silently would look like a broken button."""
-    behaviour = pathlib.Path("app/web/templates/_behaviour.html").read_text()
+    behaviour = pathlib.Path("app/web/static/app.js").read_text()
     assert "button.textContent = copied ? 'Copied' : address" in behaviour
 
 
@@ -1722,7 +1728,7 @@ def test_the_hidden_count_refreshes_with_the_filters(dusty_client):
     main = account_id(dusty_client, "Payments")
     assert "hidden" not in dusty_client.get("/dust-note", params={"wallet": main}).text
 
-    behaviour = pathlib.Path("app/web/templates/_behaviour.html").read_text()
+    behaviour = pathlib.Path("app/web/static/app.js").read_text()
     assert "dispatchEvent(new Event('filtersApplied'))" in behaviour
 
 
@@ -1822,7 +1828,7 @@ def test_the_scope_lives_in_the_bar_that_never_scrolls_away(client):
     body = client.get("/status").text
 
     assert "topline__scope" in body
-    assert "openScopeSheet()" in body
+    assert 'data-action="open-scope-sheet"' in body
     assert ">All activity</span>" in body
 
     # And it follows the selection rather than waiting for the next poll.
@@ -1869,7 +1875,7 @@ def test_search_is_a_mode_on_a_phone_not_a_third_row(client):
     """Three stacked rows of controls above the feed is most of a phone screen
     spent on the thing used least."""
     body = client.get("/").text
-    assert "toggleSearch(true)" in body and "closeSearch()" in body
+    assert 'data-action="open-search"' in body and 'data-action="close-search"' in body
 
     css = pathlib.Path("app/web/static/app.css").read_text()
     narrow = css.split("@media (max-width: 860px) {")[1]
@@ -1963,7 +1969,7 @@ def test_the_folded_rows_are_already_in_the_page(client):
     folded = re.findall(r'<tr class="row row--[^"]*row--folded[^"]*"[^>]*data-tx="([^"]+)"', body)
 
     assert folded, "rendered, not deferred"
-    assert 'onclick="toggleFold(this)"' in body
+    assert 'data-action="toggle-fold"' in body
     assert "hx-get" not in re.search(r'<tr class="row row--more-of.*?</tr>', body, re.S).group(0)
 
 
@@ -2136,7 +2142,7 @@ def test_the_scope_class_is_kept_in_step_with_the_feed(client):
     """htmx swaps the feed and leaves the container's server-rendered class
     behind. A stale `one-wallet` hides a cell that spans two columns on
     transfers between your own wallets, and takes the row's layout with it."""
-    behaviour = client.get("/").text
+    behaviour = pathlib.Path("app/web/static/app.js").read_text()
 
     assert "function syncScopeClass()" in behaviour
     assert "syncScopeClass();" in behaviour.split("function applyFilters")[1]

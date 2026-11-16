@@ -11,7 +11,7 @@
      a button inside a button is invalid HTML, and the parser closes the outer
      one early — which threw the address onto its own line. #}
   <div class="summary__head">
-    <button type="button" class="summary__toggle" onclick="toggleSummary()"
+    <button type="button" class="summary__toggle" data-action="toggle-summary"
             aria-controls="summary-body" aria-label="Show or hide holdings">
       <span class="summary__chevron" aria-hidden="true"></span>
       <span class="summary__scope">{{ portfolio.scope }}</span>
@@ -32,13 +32,13 @@
     {% if portfolio.scope_meta %}
       {# Shortened for reading, whole on the clipboard. #}
       <button type="button" class="summary__addr" data-address="{{ portfolio.scope_address }}"
-              onclick="copyAddress('{{ portfolio.scope_address }}', this)"
+              data-action="copy-address"
               title="{{ portfolio.scope_address }} — click to copy">{{ portfolio.scope_meta }}</button>
     {% endif %}
   </div>
 
   {# Narrow screens have no sidebar; this is how the scope is chosen there. #}
-  <button type="button" class="scope-trigger" onclick="openScopeSheet()">
+  <button type="button" class="scope-trigger" data-action="open-scope-sheet">
     <span>{{ scope_label }}</span>
     <span class="scope-trigger__caret" aria-hidden="true">&#9662;</span>
   </button>
@@ -85,7 +85,7 @@
           {% if portfolio.hidden %}
             {{ portfolio.token_count }} shown <span class="sep">&middot;</span>
             {{ portfolio.hidden }} hidden
-            <button type="button" class="linkish" onclick="toggleHiddenTokens()"
+            <button type="button" class="linkish" data-action="toggle-hidden-tokens"
                     title="Dust and tokens nothing vouches for: kept and indexed, never counted towards the total.">
               <span class="when-hidden">Show</span><span class="when-shown">Hide</span>
             </button>
@@ -132,7 +132,7 @@
         <button type="button" class="holdings__more{{ ' has-more' if overflow > 0 or portfolio.hidden }}"
                 hx-get="/holdings" hx-target="#wallet-dialog-body" hx-swap="innerHTML"
                 hx-include="#wallet-value, #scope-value"
-                hx-on::after-request="showWalletDialog()">
+                data-opens-dialog>
           <span class="when-wide">All holdings</span>
           <span class="when-narrow">{{ portfolio.assets | length - 2 }} more assets</span>
         </button>

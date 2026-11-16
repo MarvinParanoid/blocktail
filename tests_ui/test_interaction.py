@@ -23,7 +23,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from conftest import DESKTOP, MOBILE, SMALL, TABLET, run_axe, viewports
+from conftest import DESKTOP, MOBILE, SCRIPT, SMALL, TABLET, run_axe, viewports
 from stand import REMOVABLE
 
 from tests.conftest import tx_hash
@@ -267,9 +267,10 @@ def test_scrolled_pages_survive_the_status_poll(session, viewport):
 def add_removable(session):
     stand = session.stand
     response = session.page.request.post(stand.url + "/wallets", form={
-        "name": "Removable", "address": REMOVABLE, "chain": "ethereum", "owned": "on"})
+        "name": "Removable", "address": REMOVABLE, "chain": "ethereum", "owned": "on"},
+        headers=SCRIPT)
     assert response.ok
-    session.page.request.post(stand.url + "/__stand__/sync")
+    session.page.request.post(stand.url + "/__stand__/sync", headers=SCRIPT)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if stand.db.get_sync_status("ethereum").activity_count > 100:
@@ -330,7 +331,8 @@ def test_adding_a_wallet_updates_the_page_once(fresh_session, viewport):
 def test_a_link_to_a_removed_wallet_says_so(fresh_session, viewport):
     session = fresh_session
     removable = add_removable(session)
-    session.page.request.post(f"{session.stand.url}/wallets/{removable}/remove")
+    session.page.request.post(f"{session.stand.url}/wallets/{removable}/remove",
+                              headers=SCRIPT)
     page = session.open(f"/?wallet={removable}")
 
     notice = page.locator(".scope-missing")
@@ -355,7 +357,8 @@ def test_a_link_to_a_removed_wallet_says_so(fresh_session, viewport):
 def test_back_and_forward_through_a_removed_wallet(fresh_session, viewport):
     session = fresh_session
     removable = add_removable(session)
-    session.page.request.post(f"{session.stand.url}/wallets/{removable}/remove")
+    session.page.request.post(f"{session.stand.url}/wallets/{removable}/remove",
+                              headers=SCRIPT)
     page = session.open("/")
     session.open(f"/?wallet={removable}")
     assert page.locator(".scope-missing").is_visible()

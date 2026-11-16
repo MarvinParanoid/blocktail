@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 import time
 
-from conftest import DESKTOP, MOBILE, viewports
+from conftest import DESKTOP, MOBILE, SCRIPT, viewports
 
 from tests.conftest import ProviderDown
 
@@ -130,7 +130,7 @@ def test_a_provider_failure_is_not_a_lost_connection(fresh_session, viewport):
     session = fresh_session
     page = session.open("/")
     session.stand.provider.fail_with = ProviderDown("alchemy: HTTP 503 from the provider")
-    page.request.post(session.stand.url + "/__stand__/sync")
+    page.request.post(session.stand.url + "/__stand__/sync", headers=SCRIPT)
     wait_for(page, "() => !!document.querySelector('.status--error')", timeout=POLL + 6)
 
     detail = page.locator(".status__detail").inner_text()
@@ -146,7 +146,7 @@ def test_a_balance_warning_is_not_shown_as_fully_healthy(fresh_session, viewport
     stand = session.stand
     stand.provider.fail_balances_with = ProviderDown("HTTP 503 from the balance API")
     stand.app.state.ctx.indexer._balances_at = None   # the next cycle reads every wallet
-    page.request.post(stand.url + "/__stand__/sync")
+    page.request.post(stand.url + "/__stand__/sync", headers=SCRIPT)
     wait_for(page, "() => !!document.querySelector('.status__detail--balances')",
              timeout=POLL + 6)
 
@@ -164,7 +164,7 @@ def test_a_history_request_is_shown_in_the_status(fresh_session, viewport):
     page = session.open("/")
     stand.provider.gate.clear()
     try:
-        page.request.post(stand.url + "/history/older")
+        page.request.post(stand.url + "/history/older", headers=SCRIPT)
         wait_for(page, "() => /older history/i.test("
                        "document.querySelector('.status__history')?.innerText || '')")
         note = page.locator(".status__history").inner_text().lower()
