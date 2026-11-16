@@ -8,7 +8,11 @@
 # first). This checks what it is, then writes:
 #
 #   blocktail-<sha12>.tar.gz   `docker save` of the image, gzip -n
-#   image.json                 id, platform, user, labels, base, layers
+#   image.json                 id, config, platform, user, labels, base, layers
+#
+# "id" is the image's id where it was built; "config" is the digest of its
+# config blob, which is the id `docker load` gives it on a host with the
+# classic image store (overlay2, as on the server). Compare with that one.
 #   app-files.txt              git blob hash and path of every file in /srv/app
 #   packages.txt               pip freeze inside the image
 #   SHA256SUMS                 of the four files above
@@ -74,18 +78,20 @@ rm "$OUT/.expected"
 docker run --rm --entrypoint python "$TAG" -m pip freeze --all > "$OUT/packages.txt"
 
 id="$(inspect '{{.Id}}')"
+docker save "$TAG" | gzip -n -6 > "$OUT/blocktail-$SHORT.tar.gz"
+config="$(tar -xzOf "$OUT/blocktail-$SHORT.tar.gz" manifest.json \
+  | python3 -c 'import json, sys; print("sha256:" + json.load(sys.stdin)[0]["Config"].rsplit("/", 1)[-1])')"
 python3 - "$OUT/image.json" <<EOF
 import json, sys
 json.dump({
-    "tag": "$TAG", "id": "$id", "revision": "$SHA", "platform": "$platform",
+    "tag": "$TAG", "id": "$id", "config": "$config", "revision": "$SHA", "platform": "$platform",
     "user": "$user", "base": "$base",
     "layers": "$our_layers".split(),
     "labels": json.loads('''$(inspect '{{json .Config.Labels}}')'''),
 }, open(sys.argv[1], "w"), indent=1)
 EOF
 
-docker save "$TAG" | gzip -n -6 > "$OUT/blocktail-$SHORT.tar.gz"
 (cd "$OUT" && sha256sum "blocktail-$SHORT.tar.gz" image.json app-files.txt packages.txt > SHA256SUMS)
-say "ok: $TAG ($id), $platform, user $user, on $base, revision $SHA"
+say "ok: $TAG ($id; config $config), $platform, user $user, on $base, revision $SHA"
 say "ok: $(wc -l < "$OUT/app-files.txt") files in /srv/app are HEAD's app/"
 say "$(cat "$OUT/SHA256SUMS")"

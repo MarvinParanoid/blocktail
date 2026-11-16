@@ -76,11 +76,14 @@ git switch --detach <sha>                     # the commit the artifact is of
 gh run download <run id> -n release-image -D /tmp/release
 (cd /tmp/release && sha256sum -c SHA256SUMS)
 gunzip -c /tmp/release/blocktail-<sha12>.tar.gz | ssh "$HOST" docker load
-ssh "$HOST" docker image inspect -f '{{.Id}}' blocktail:<sha12>   # = "id" in image.json
+ssh "$HOST" docker image inspect -f '{{.Id}}' blocktail:<sha12>   # = "config" in image.json
 scripts/deploy.sh                             # says "already built; not rebuilding"
 ```
 
-Loading adds an image and changes nothing that runs. Deploy from the same
+`docker load` on the server's classic image store (overlay2) names the image
+by its config digest — "config" in image.json; "id" is what the containerd
+store CI builds with calls it. Loading adds an image and changes nothing that
+runs. Deploy from the same
 commit: `deploy.sh` ships `git archive HEAD` and the server looks for
 `blocktail:<HEAD's sha12>`; from any other commit it would build instead.
 
