@@ -1008,10 +1008,13 @@ def test_the_top_line_counts_and_totals_only_what_is_mine(mixed_client):
     """The panel says "my wallets"; the top line must not contradict it by
     folding a watched whale's balance into the same figure."""
     body = mixed_client.get("/status").text
+    # What is on screen: the markup carries the render time (data-now), and a
+    # Unix timestamp that happens to contain "936" is not a total.
+    text = re.sub(r"<[^>]*>", " ", body)
 
-    assert "2 mine" in body and "1 watching" in body
-    assert "36.241" in body, "Main + Cold, without the whale's 900 ETH"
-    assert "936" not in body
+    assert "2 mine" in text and "1 watching" in text
+    assert "36.241" in text, "Main + Cold, without the whale's 900 ETH"
+    assert "936" not in text
 
 
 def test_the_top_line_stays_plain_when_nothing_is_merely_watched(client):
