@@ -36,8 +36,10 @@
       {% for t in tx.transfers %}
         <li class="xfer xfer--{{ t.direction }}{{ ' is-current' if t.id == tx.selected_id }}">
           <div class="xfer__amount">
-            <span class="amount">{{ t.amount_text }}</span
+            {#- Exact, always: this is where a compact figure in the feed is read in full. -#}
+            <span class="amount num"{% if t.raw_units %} title="raw on-chain units, not valued"{% endif %}>{{ t.amount_text }}</span
             >{% if t.asset_url %}<a class="sym" href="{{ t.asset_url }}" target="_blank" rel="noopener noreferrer">{{ t.symbol }}</a>{% else %}<span class="sym">{{ t.symbol }}</span>{% endif -%}
+            {%- if t.raw_units %}<span class="kind" title="Decimals unknown: raw on-chain units, not valued">raw</span>{% endif %}
             {%- if t.kind_badge %}<span class="kind">{{ t.kind_badge }}</span>{% endif %}
             {%- if t.value_text %}<span class="fiat">{{ t.value_text }}</span>{% endif %}
           </div>

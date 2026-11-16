@@ -76,6 +76,71 @@ def format_money(value: Decimal | None, *, currency_symbol: str = "$") -> str | 
     return f"{'-' if rounded < 0 else ''}{currency_symbol}{body}"
 
 
+# From a billion up, a number is shown compactly. Below it, exactly: the
+# longest exact amount a row then carries is "999,999,999.999999", which fits.
+COMPACT_FROM = Decimal(10) ** 9
+_SUPERSCRIPT = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _three_digits(value: Decimal) -> str:
+    """Three significant digits, trailing zeros dropped: 12.3, 4.56, 120."""
+    with localcontext() as context:
+        context.prec = 40
+        places = 0 if value >= 100 else 1 if value >= 10 else 2
+        text = f"{value.quantize(Decimal(1).scaleb(-places)):f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def compact_number(value: Decimal) -> str | None:
+    """A very large number at a glance: '12.3B', '4.56T', '1×10³⁰'. ``None``
+    below COMPACT_FROM, where the exact form is short enough to show.
+
+    Display only. It is never stored, summed or compared, and the exact value
+    is always rendered beside it for whoever needs it.
+    """
+    with localcontext() as context:
+        context.prec = 80
+        magnitude = abs(value)
+        if magnitude < COMPACT_FROM:
+            return None
+        sign = "-" if value < 0 else ""
+        # B, then T; a value that rounds up to 1000 of one moves to the next
+        # (999.6B is "1T", not "1000B"), and past the T range to a power of ten.
+        for threshold, suffix in ((Decimal(10) ** 9, "B"), (Decimal(10) ** 12, "T")):
+            scaled = magnitude / threshold
+            if scaled < 1000:
+                text = _three_digits(scaled)
+                if Decimal(text) < 1000:
+                    return f"{sign}{text}{suffix}"
+        exponent = magnitude.adjusted()
+        mantissa = magnitude.scaleb(-exponent)
+        if mantissa.quantize(Decimal("0.01")) >= 10:
+            exponent += 1
+            mantissa = magnitude.scaleb(-exponent)
+        power = str(exponent).translate(_SUPERSCRIPT)
+        return f"{sign}{_three_digits(mantissa)}×10{power}"
+
+
+def compact_amount(amount_raw: int | str, decimals: int | None) -> str | None:
+    """The compact form of an amount, or ``None`` when it is shown exactly.
+    With unknown decimals the raw integer is the amount being shown."""
+    with localcontext() as context:
+        context.prec = len(str(abs(int(amount_raw)))) + (decimals or 0) + 8
+        value = Decimal(int(amount_raw)).scaleb(-(decimals or 0))
+    return compact_number(value)
+
+
+def compact_money(value: Decimal | None, *, currency_symbol: str = "$") -> str | None:
+    if value is None:
+        return None
+    short = compact_number(value)
+    if short is None:
+        return None
+    if short.startswith("-"):
+        return f"-{currency_symbol}{short[1:]}"
+    return f"{currency_symbol}{short}"
+
+
 def format_money_short(value: Decimal | None, *, currency_symbol: str = "$") -> str | None:
     """Money at a glance: `$35.7k`, `$123.5k`, `$29.8m`. Precision here would be
     noise — the exact figure lives one click away in the summary."""
@@ -170,6 +235,10 @@ class ActivityView:
     block_url: str
     # Decimals unknown: amount_text is raw on-chain units, and nothing is valued.
     raw_units: bool = False
+    # Shown in place of the exact text when that is too long for a row; the
+    # exact text is always rendered beside it. None: show the exact text.
+    amount_compact: str | None = None
+    value_compact: str | None = None
 
     @property
     def cursor(self) -> tuple[int, int]:
@@ -305,6 +374,8 @@ def build_activity(
         block_number=row["block_number"],
         block_url=chain.explorer_block_url(row["block_number"]),
         raw_units=row["decimals"] is None,
+        amount_compact=compact_amount(row["amount_raw"], row["decimals"]),
+        value_compact=compact_money(value_usd),
     )
 
 
@@ -504,6 +575,8 @@ class AssetTotal:
     excluded: bool = False
     hidden: bool = False     # indexed and kept, just not worth showing by default
     raw_units: bool = False  # decimals unknown: the amount is raw on-chain units
+    amount_compact: str | None = None  # see ActivityView
+    value_compact: str | None = None
 
 
 def value_of(amount_raw: int | str, decimals: int | None, quote) -> Decimal | None:
@@ -804,6 +877,8 @@ def build_portfolio(
                     excluded=excluded,
                     hidden=holding.asset_id in verdicts.hidden,
                     raw_units=holding.decimals is None,
+                    amount_compact=compact_amount(holding.raw, holding.decimals),
+                    value_compact=compact_money(value),
                 ),
             )
         )

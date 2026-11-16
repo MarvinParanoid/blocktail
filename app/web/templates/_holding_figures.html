@@ -2,13 +2,15 @@
    holdings sheet. An excluded asset gets a word, not its quote: the quote is
    the one figure the total refused to believe. Unknown decimals are said, not
    rendered as whole tokens. #}
-<span class="holding__amount num"
-      {%- if asset.raw_units %} title="Decimals unknown: raw on-chain units, not valued"{% endif %}>
-  {{- asset.amount_text }}{% if asset.raw_units %} <span class="kind">raw</span>{% endif -%}
-</span>
+{#- The holdings sheet is where a holding is read exactly (exact_figures);
+    the summary strip shows the compact form when the exact one is long. -#}
+{% from "_macros.html" import figure %}
+{{ figure(asset.amount_text, none if exact_figures else asset.amount_compact,
+          "holding__amount num", asset.raw_units) }}
+{%- if asset.raw_units %}<span class="kind" title="Decimals unknown: raw on-chain units, not valued">raw</span>{% endif %}
 {% if asset.excluded %}
   <span class="holding__value holding__value--excluded"
         title="Its price quote is not credible, so it is left out of the total">excluded</span>
 {% else %}
-  <span class="holding__value num">{{ asset.value_text or '' }}</span>
+  {{ figure(asset.value_text or '', none if exact_figures else asset.value_compact, "holding__value num") }}
 {% endif %}

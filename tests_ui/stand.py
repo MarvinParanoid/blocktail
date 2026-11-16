@@ -52,6 +52,9 @@ LINK = AssetRef(C, "0x514910771af9ca656af840dff83e8264ecf986ca", "LINK", 18)
 NMT = AssetRef(C, address("nmt-scam")[:42], "NMT", 18)
 # A forged ticker (Lisu letters that read as USDT): hidden as an impostor.
 FORGED = AssetRef(C, address("forged-usdt")[:42], "ꓴꓢꓓ⊤", 6)
+# A token whose metadata lookup failed: decimals unknown. Vouched for in the
+# config and quoted, so it is shown — in raw units, and never valued.
+MYSTERY = AssetRef(C, address("mystery-token")[:42], "MYSTERY", None)
 
 MAIN = address("ui-main")
 COLD = address("ui-cold")
@@ -81,6 +84,7 @@ PRICES = {
     (C, LINK.contract_address): Decimal("14.21"),
     (C, NMT.contract_address): Decimal("0.42"),
     (C, FORGED.contract_address): Decimal(1),
+    (C, MYSTERY.contract_address): Decimal(1),
 }
 
 # The swap the inspector tests open: one transaction, four transfers.
@@ -148,6 +152,8 @@ def _transfers(now: int) -> list:
     add("ui-forged", STRANGERS[4], MAIN, 10_000 * 10**6, blocks_ago=1800, asset=FORGED,
         kind=TransferKind.TOKEN, log_index=5)
     add("ui-dust", STRANGERS[5], MAIN, 1, blocks_ago=2500)
+    add("ui-mystery", STRANGERS[8], MAIN, 2_500_000, blocks_ago=300, asset=MYSTERY,
+        kind=TransferKind.TOKEN, log_index=6)
     # History older than the backfill window: reached by "Load more".
     add("ui-ancient", STRANGERS[6], MAIN, 3 * E18, blocks_ago=40 * DAY_BLOCKS)
     # The wallet a test adds and removes has a history of its own.
@@ -158,7 +164,7 @@ def _transfers(now: int) -> list:
 def _balances() -> dict:
     return {
         MAIN: [Balance(USDC, 12_500 * 10**6), Balance(LINK, 412 * E18),
-               Balance(FORGED, 10_000 * 10**6)],
+               Balance(FORGED, 10_000 * 10**6), Balance(MYSTERY, 2_500_000)],
         COLD: [Balance(USDC, 500 * 10**6), Balance(WETH, 3 * E18)],
         PAY: [Balance(USDT, 12_000 * 10**6)],
         TREASURY: [Balance(USDC, 1_000_000 * 10**6)],
@@ -194,7 +200,8 @@ class Stand:
             price_refresh=3600,
             balance_refresh=3600,
         )
-        config = make_config(wallets=WALLETS, labels={BINANCE: "Binance hot"})
+        config = make_config(wallets=WALLETS, labels={BINANCE: "Binance hot"},
+                             trusted_assets=[MYSTERY.contract_address])
         self.app = create_app(settings=settings, config=config, provider=self.provider,
                               price_source=FakePrices(quotes=dict(PRICES)), run_indexer=True)
         # Stand-only: lets a test ask for a cycle the way a request for older

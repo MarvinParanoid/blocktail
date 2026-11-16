@@ -1,3 +1,4 @@
+{% from "_macros.html" import figure %}
 {% set ns = namespace(day=previous_day) %}
 {% set oldest_cursor = (activities[-1].timestamp ~ '_' ~ activities[-1].id) if activities else '' %}
 
@@ -42,11 +43,10 @@
     {% endif %}
 
     <td class="cell-value">
-      <span class="amount"{% if activity.raw_units %} title="Decimals unknown: raw on-chain units, not valued"{% endif %}>{{ activity.amount_text }}</span
-      >{% if activity.asset_url %}<a class="sym" href="{{ activity.asset_url }}" target="_blank" rel="noopener noreferrer">{{ activity.symbol }}</a>{% else %}<span class="sym">{{ activity.symbol }}</span>{% endif -%}
+      {{ figure(activity.amount_text, activity.amount_compact, "amount", activity.raw_units) }}{% if activity.asset_url %}<a class="sym" href="{{ activity.asset_url }}" target="_blank" rel="noopener noreferrer">{{ activity.symbol }}</a>{% else %}<span class="sym">{{ activity.symbol }}</span>{% endif -%}
       {%- if activity.raw_units %}<span class="kind" title="Decimals unknown: raw on-chain units, not valued">raw</span>{% endif %}
       {%- if activity.kind_badge %}<span class="kind" title="Internal transfer — value moved by contract execution">{{ activity.kind_badge }}</span>{% endif %}
-      {%- if activity.value_text %}<span class="fiat">{{ activity.value_text }}</span>{% endif %}
+      {%- if activity.value_text %}{{ figure(activity.value_text, activity.value_compact, "fiat") }}{% endif %}
     </td>
 
     <td class="cell-party">
@@ -101,7 +101,7 @@
           {% if group.extra == 1 %}
             {% set other = group.siblings[0] %}
             <span class="foldout__one">
-              <span class="num">{{ other.amount_text }}</span>
+              {{ figure(other.amount_text, other.amount_compact, "num") }}
               <span class="sym">{{ other.symbol }}</span>
               <span class="arrow" aria-hidden="true">&rarr;</span>
               <span class="foldout__party">{{ other.counterparty.display if other.counterparty else other.target.display }}</span>

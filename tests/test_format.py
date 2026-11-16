@@ -80,3 +80,49 @@ def test_day_label_has_no_leading_zero():
     from app.web.format import day_label
 
     assert day_label(date(2026, 3, 5), today=date(2026, 3, 20)) == "Mar 5"
+
+
+# --------------------------------------------- compact figures (S5, U-04)
+
+from decimal import Decimal  # noqa: E402
+
+from app.web.format import compact_amount, compact_money, compact_number  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("999999999.99", None),          # below a billion: shown exactly
+        ("1000000000", "1B"),
+        ("12345678901", "12.3B"),
+        ("999400000000", "999B"),
+        ("999500000000", "1T"),          # rounds up into the next unit
+        ("1000000000000", "1T"),
+        ("456000000000000", "456T"),
+        ("999999999999999", "1×10¹⁵"),
+        ("4560000000000000", "4.56×10¹⁵"),
+        ("1e30", "1×10³⁰"),
+        ("-2500000000", "-2.5B"),
+    ],
+)
+def test_compact_number(value, expected):
+    assert compact_number(Decimal(value)) == expected
+
+
+def test_compact_amount_uses_decimals_and_raw_units():
+    assert compact_amount(10**30 * 10**18, 18) == "1×10³⁰"
+    assert compact_amount(12_500 * 10**6, 6) is None
+    # Unknown decimals: the raw integer is what is shown, compact when long.
+    assert compact_amount(2_500_000, None) is None
+    assert compact_amount(10**20, None) == "1×10²⁰"
+
+
+def test_compact_money():
+    assert compact_money(Decimal("15603")) is None
+    assert compact_money(Decimal("2500000000")) == "$2.5B"
+    assert compact_money(None) is None
+
+
+def test_compact_is_exact_decimal_arithmetic():
+    """No float anywhere: a value a float would round still compacts right."""
+    assert compact_number(Decimal("123456789012345678901234567890")) == "1.23×10²⁹"

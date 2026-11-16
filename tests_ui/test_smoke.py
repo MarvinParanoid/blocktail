@@ -58,12 +58,7 @@ def test_the_dashboard_renders(session, viewport):
     assert total.startswith("$"), session.where(f"portfolio total {total!r}")
 
 
-@pytest.mark.parametrize("viewport", [
-    DESKTOP,
-    TABLET,
-    pytest.param(MOBILE, marks=known("U-03", "the 34-digit NMT amount overflows the row")),
-    pytest.param(SMALL, marks=known("U-03", "the 34-digit NMT amount overflows the row")),
-], ids=lambda v: v.id)
+@viewports(DESKTOP, TABLET, MOBILE, SMALL)
 def test_the_dashboard_has_no_horizontal_overflow(session, viewport):
     page = session.open("/")
     extra = overflow(page, viewport)
@@ -72,7 +67,8 @@ def test_the_dashboard_has_no_horizontal_overflow(session, viewport):
 
 @viewports(MOBILE, SMALL)
 def test_a_feed_without_the_scam_row_fits_a_phone(session, viewport):
-    """Scopes U-03 to its cause: the same page without that row fits."""
+    """Kept from when U-03 was open, where it scoped the defect to its cause;
+    a narrower page than the dashboard, and a cheap check."""
     page = session.open(f"/?wallet={session.stand.account_id('Main')}")
     extra = overflow(page, viewport)
     assert extra <= 0, session.where(f"Main's feed is {extra}px wider than the screen")
@@ -193,8 +189,6 @@ def test_the_inspector_opens_and_closes(session, viewport):
 
 
 @viewports(MOBILE)
-@known("U-03", "on the dashboard the overflow widens the page and the inspector's close "
-               "button lies past the right edge of a 390px screen")
 def test_the_inspector_close_button_is_on_screen_on_the_dashboard(session, viewport):
     page = open_the_swap(session, "/")
     assert close_button_on_screen(page, viewport), session.where("the close button is on screen")
@@ -225,7 +219,6 @@ def test_the_holdings_sheet_opens(session, viewport):
 
 
 @viewports(MOBILE)
-@known("U-02", "a CSS rule hides every item of the holdings sheet on phones")
 def test_the_holdings_sheet_shows_its_assets(session, viewport):
     page = session.open("/")
     page.locator(".holdings__more").first.click()
