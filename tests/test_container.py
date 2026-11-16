@@ -120,12 +120,13 @@ def test_the_healthcheck_asks_healthz_on_loopback():
     assert SERVICE["healthcheck"]["test"][-1].count("http://127.0.0.1:8000/healthz") == 1
 
 
-def test_one_stage_from_the_python_slim_image_dependabot_can_follow():
-    """A literal FROM (an ARG in FROM is invisible to Dependabot); a digest
-    may be appended to pin it."""
+def test_one_stage_from_the_python_slim_image_pinned_by_digest():
+    """A literal FROM (an ARG in FROM is invisible to Dependabot), the tag and
+    its digest: the same build next month, and a tag Dependabot can follow —
+    it proposes the new digest of the same tag as a pull request."""
     froms = [rest for word, rest in DOCKER if word == "FROM"]
     assert len(froms) == 1
-    assert re.fullmatch(r"python:3\.13-slim(@sha256:[0-9a-f]{64})?", froms[0])
+    assert re.fullmatch(r"python:3\.13-slim@sha256:[0-9a-f]{64}", froms[0]), froms[0]
 
 
 # -------------------------------------------------------------------- compose

@@ -194,9 +194,13 @@ build a release candidate. Nothing here changes the server.
 10. **Secrets:** `ls -l .env` → `-rw-------`; `docker history --no-trunc
     blocktail:<sha>` and `docker image inspect` show no key; `docker logs
     blocktail | grep -c <first 8 chars of the key>` → 0.
-11. **Base image pinned** for the RC build:
-    `docker buildx imagetools inspect python:3.13-slim` gives the digest; put
-    it in the Dockerfile `FROM` and commit.
+11. **Base image pinned.** The Dockerfile names `python:3.13-slim` with the
+    digest of its multi-platform index (pinned in RC1.1: the index CI built and
+    tested). On the server, `docker image inspect blocktail:<sha>` after the
+    build, and `docker buildx imagetools inspect python:3.13-slim@sha256:…`
+    lists the platform the server pulled. A newer digest arrives from
+    Dependabot as a pull request; take it through CI, never by hand-editing
+    the tag away.
 12. **HSTS** added in the proxy once 3 has been seen working.
 
 What CI checks on every push instead (the `image` job,

@@ -1,8 +1,10 @@
-# By tag. For a release candidate that builds the same next month, pin the
-# digest here (python:3.13-slim@sha256:…; see docs/production.md) — Dependabot
-# keeps a pinned FROM current. The same tag also fixes the system uid the user
-# below gets, which the data volume depends on.
-FROM python:3.13-slim
+# The tag and its digest: the digest makes the build the same next month, the
+# tag says what it is and is what Dependabot follows — a new digest of the same
+# tag arrives as a pull request and runs the container smoke. The digest is the
+# multi-platform index (amd64, arm64, …), so it pins the image on any host.
+# The same image also fixes the system uid the user below gets, which the data
+# volume depends on. See docs/production.md.
+FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
