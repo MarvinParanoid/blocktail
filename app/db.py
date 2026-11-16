@@ -846,22 +846,125 @@ class Database:
             backfill_done=bool(row["backfill_done"]),
             requested_from_block=row["requested_from_block"],
             activity_count=self.activity_count(),
+            history_status=row["history_status"],
+            history_target=row["history_target"],
+            history_error=redact(row["history_error"]),
+            balances_error=redact(row["balances_error"]),
+            balances_failed_at=row["balances_failed_at"],
+            balances_ok_at=row["balances_ok_at"],
         )
 
-    def request_history_from(self, chain_id: str, block: int) -> None:
-        """Ask the indexer to reach back to ``block``. Only ever deeper."""
+    # ------------------------------------------------- older-history requests
+    #
+    # "Load N more days" is a request the page makes and the background
+    # indexer carries out. The rule for repeated requests, in one place:
+    #
+    #   queued or running  -> nothing changes; the request already in hand
+    #                         is the answer (ten clicks are one request)
+    #   failed             -> queued again for the same block, not a deeper one
+    #   completed or none  -> a new request, one window deeper than the
+    #                         deepest point reached or asked for
+    #
+    # The block asked for is also written to requested_from_block, which the
+    # indexer treats as a floor for every cycle from then on, so the request
+    # survives a restart and is retried until it succeeds.
+
+    HISTORY_ACTIVE = ("queued", "running")
+
+    def request_history(self, chain_id: str, window_blocks: int) -> SyncStatus:
+        conn = self.connect()
+        now = int(time.time())
+        with self._write_lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM sync_state WHERE chain_id = ?", (chain_id,)
+                ).fetchone()
+                status = row["history_status"] if row else None
+                if status not in self.HISTORY_ACTIVE:
+                    if status == "failed" and row["history_target"] is not None:
+                        target = row["history_target"]
+                    else:
+                        floor = self._history_floor(conn, chain_id)
+                        requested = row["requested_from_block"] if row else None
+                        known = [x for x in (floor, requested) if x is not None]
+                        reference = min(known) if known else ((row and row["head_block"]) or 0)
+                        target = max(0, reference - window_blocks)
+                    conn.execute(
+                        "INSERT INTO sync_state (chain_id) VALUES (?)"
+                        " ON CONFLICT (chain_id) DO NOTHING",
+                        (chain_id,),
+                    )
+                    conn.execute(
+                        "UPDATE sync_state SET"
+                        "  requested_from_block = MIN(COALESCE(requested_from_block, ?), ?),"
+                        "  history_status = 'queued', history_target = ?,"
+                        "  history_requested_at = ?, history_finished_at = NULL,"
+                        "  history_error = NULL"
+                        " WHERE chain_id = ?",
+                        (target, target, target, now, chain_id),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return self.get_sync_status(chain_id)
+
+    def history_started(self, chain_id: str) -> None:
+        """A cycle is now reaching for the requested history."""
+        self._history_transition(chain_id, "running", ("queued", "failed"))
+
+    def history_finished(self, chain_id: str, error: str | None = None) -> None:
+        """The cycle that was reaching for it ended — well or not."""
         conn = self.connect()
         with self._write_lock:
             conn.execute(
-                "INSERT INTO sync_state (chain_id, requested_from_block) VALUES (?, ?)"
-                " ON CONFLICT (chain_id) DO UPDATE SET requested_from_block ="
-                "   MIN(COALESCE(requested_from_block, ?), ?)",
-                (chain_id, block, block, block),
+                "UPDATE sync_state SET history_status = ?, history_finished_at = ?,"
+                " history_error = ? WHERE chain_id = ? AND history_status = 'running'",
+                (
+                    "failed" if error else "completed",
+                    int(time.time()),
+                    (redact(error) or "")[:500] if error else None,
+                    chain_id,
+                ),
             )
+
+    def resume_history_after_restart(self, chain_id: str) -> None:
+        """A request that was running when the process stopped is queued again;
+        its block is still in requested_from_block, so nothing is lost."""
+        self._history_transition(chain_id, "queued", ("running",))
+
+    def _history_transition(self, chain_id: str, to: str, from_: tuple[str, ...]) -> None:
+        conn = self.connect()
+        marks = ", ".join("?" * len(from_))
+        with self._write_lock:
+            conn.execute(
+                f"UPDATE sync_state SET history_status = ? WHERE chain_id = ?"
+                f" AND history_status IN ({marks})",
+                (to, chain_id, *from_),
+            )
+
+    # ------------------------------------------------------------- balances
+
+    def record_balances(self, chain_id: str, error: str | None) -> None:
+        """Balances succeeded, or why they did not — apart from indexing,
+        whose watermark does not depend on them."""
+        now = int(time.time())
+        if error:
+            self._upsert_sync(
+                chain_id,
+                {"balances_error": (redact(error) or "")[:500], "balances_failed_at": now},
+            )
+        else:
+            self._upsert_sync(chain_id, {"balances_error": None, "balances_ok_at": now})
 
     def history_floor(self, chain_id: str) -> int | None:
         """The earliest block any active account has been read from."""
-        row = self.connect().execute(
+        return self._history_floor(self.connect(), chain_id)
+
+    @staticmethod
+    def _history_floor(conn: sqlite3.Connection, chain_id: str) -> int | None:
+        row = conn.execute(
             "SELECT MIN(indexed_from_block) FROM accounts"
             " WHERE active = 1 AND chain_id = ? AND indexed_from_block IS NOT NULL",
             (chain_id,),

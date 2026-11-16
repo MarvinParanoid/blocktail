@@ -146,6 +146,10 @@ def create_app(
         if listed := getattr(ctx.chain, "token_decimals", None):
             ctx.db.adopt_listed_decimals(ctx.chain.chain_id, listed)
 
+        # A request for older history that was running when the process
+        # stopped is queued again; the block it reaches for is persisted.
+        ctx.db.resume_history_after_restart(ctx.chain.chain_id)
+
         # Also re-derives the account columns: a wallet added to the file picks
         # up history already indexed, and one removed from it lets go of its own.
         accounts = ctx.db.apply_watch_config(ctx.config)
@@ -164,12 +168,15 @@ def create_app(
             yield
         finally:
             if task is not None:
+                # Stop the loop and the cycle it is in, and wait for both to
+                # unwind before the provider and the database are closed.
                 ctx.indexer.stop()
                 task.cancel()
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+                await ctx.indexer.wait_idle()
             await ctx.provider.close()
             if ctx.price_source is not None:
                 await ctx.price_source.close()

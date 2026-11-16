@@ -391,6 +391,7 @@ def index(
             "status": _status_view(ctx),
             "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
             "older_days": ctx.settings.backfill_days,
+            "history": _history(ctx),
             **_counts(ctx, filters, _scope_ids(ctx, filters)),
         },
     )
@@ -426,6 +427,7 @@ def activity_fragment(
             "is_page": filters.cursor is not None,
             "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
             "older_days": ctx.settings.backfill_days,
+            "history": _history(ctx),
         },
     )
 
@@ -507,8 +509,34 @@ async def transaction_inspector(request: Request, activity_id: int):
     )
 
 
+def _history(ctx) -> dict:
+    """Where the latest request for older history stands, for the page."""
+    status = ctx.db.get_sync_status(ctx.chain.chain_id)
+    return {
+        "status": status.history_status,
+        "target": status.history_target,
+        "error": status.history_error,
+        "active": status.history_status in ctx.db.HISTORY_ACTIVE,
+    }
+
+
+def _history_row(request, ctx, filters: Filters, cursor: str | None, day: str | None):
+    return templates.TemplateResponse(
+        request,
+        "_history_row.html",
+        {
+            "history": _history(ctx),
+            "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
+            "older_days": ctx.settings.backfill_days,
+            "filters": filters,
+            "cursor": cursor or "",
+            "day": (day or "")[:10],
+        },
+    )
+
+
 @router.post("/history/older", response_class=HTMLResponse)
-async def load_older_history(
+async def request_older_history(
     request: Request,
     wallet: str | None = Form(None),
     direction: str | None = Form(None),
@@ -519,26 +547,48 @@ async def load_older_history(
     before: str | None = Form(None),
     after_day: str | None = Form(None),
 ):
-    """Reach further back on demand, then hand over the page it uncovered.
+    """Ask the indexer to reach further back, and answer at once.
 
     The feed ending is not the same as the history ending — it ends where the
-    backfill window was set. This moves that window and fetches, so the button
-    behaves like "load more" and simply takes longer the first time.
+    backfill window was set. This records a request (see
+    Database.request_history for what repeated clicks do) and wakes the
+    background indexer; it never runs a cycle itself. The row it returns polls
+    the request's progress and, once it is done, is replaced by the rows it
+    uncovered. Closing the page does not stop the work.
     """
     ctx = request.app.state.ctx
     if not _same_origin(request):
         return HTMLResponse("", status_code=403)
 
-    floor = ctx.db.history_floor(ctx.chain.chain_id)
-    status = ctx.db.get_sync_status(ctx.chain.chain_id)
-    reference = min(x for x in (floor, status.requested_from_block) if x is not None) if (
-        floor is not None or status.requested_from_block is not None
-    ) else (status.head_block or 0)
-    target = max(0, reference - ctx.settings.backfill_blocks)
-    ctx.db.request_history_from(ctx.chain.chain_id, target)
-    log.info("history extended to block %s on request", target)
+    state = ctx.db.request_history(ctx.chain.chain_id, ctx.settings.backfill_blocks)
+    log.info(
+        "older history %s: reaching for block %s", state.history_status, state.history_target
+    )
+    ctx.indexer.wake()
+    filters = _parse_filters(wallet, direction, asset, q, None, scope, dust)
+    return _history_row(request, ctx, filters, before, after_day)
 
-    await ctx.indexer.run_once()
+
+@router.get("/history/older", response_class=HTMLResponse)
+def older_history_progress(
+    request: Request,
+    wallet: str | None = Query(None),
+    direction: str | None = Query(None),
+    asset: str | None = Query(None),
+    q: str | None = Query(None),
+    scope: str | None = Query(None),
+    dust: str | None = Query(None),
+    before: str | None = Query(None),
+    after_day: str | None = Query(None),
+):
+    """The end-of-feed row, asked for again while a request is in hand: still
+    queued or running, failed — or done, in which case the rows it uncovered
+    take its place, continuing from where the feed ended."""
+    ctx = request.app.state.ctx
+    history = _history(ctx)
+    if history["active"] or history["status"] == "failed":
+        filters = _parse_filters(wallet, direction, asset, q, None, scope, dust)
+        return _history_row(request, ctx, filters, before, after_day)
 
     filters = _parse_filters(wallet, direction, asset, q, before, scope, dust)
     activities, next_cursor = _load_page(ctx, filters)
@@ -554,6 +604,7 @@ async def load_older_history(
             "is_page": True,
             "history_floor": ctx.db.history_floor(ctx.chain.chain_id),
             "older_days": ctx.settings.backfill_days,
+            "history": history,
         },
     )
 
@@ -942,6 +993,17 @@ def api_status(request: Request):
         "last_error": status.last_error,
         "activity_count": status.activity_count,
         "backfill_done": status.backfill_done,
+        # Apart from indexing: a balance read can fail while the index is current.
+        "balances": {
+            "error": status.balances_error,
+            "failed_at": status.balances_failed_at,
+            "updated_at": status.balances_ok_at,
+        },
+        "history": {
+            "status": status.history_status,
+            "target_block": status.history_target,
+            "error": status.history_error,
+        },
     }
 
 

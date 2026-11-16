@@ -1737,19 +1737,23 @@ def test_asking_for_older_history_moves_the_floor_and_keeps_it(client):
     response = client.post("/history/older", headers={"sec-fetch-site": "same-origin"})
 
     assert response.status_code == 200
-    after = client.ctx.db.get_sync_status("ethereum").requested_from_block
+    status = client.ctx.db.get_sync_status("ethereum")
+    after = status.requested_from_block
     assert after is not None and after < before
+    assert status.history_status == "queued"
 
-    # It survives a restart: BACKFILL_DAYS is a deployment default, this is the
-    # reader having asked once and for all.
+    # Asking again while it is in hand changes nothing.
+    client.post("/history/older", headers={"sec-fetch-site": "same-origin"})
+    assert client.ctx.db.get_sync_status("ethereum").requested_from_block == after
+
+    # Once done, a new request goes one window deeper — and the floor survives
+    # a restart: BACKFILL_DAYS is a deployment default, this is the reader
+    # having asked once and for all.
+    run(client.ctx.indexer.run_once())
+    assert client.ctx.db.get_sync_status("ethereum").history_status == "completed"
     client.post("/history/older", headers={"sec-fetch-site": "same-origin"})
     deeper = client.ctx.db.get_sync_status("ethereum").requested_from_block
     assert deeper < after
-
-    client.ctx.db.request_history_from("ethereum", deeper + 10_000)
-    assert client.ctx.db.get_sync_status("ethereum").requested_from_block == deeper, (
-        "the request only ever goes deeper"
-    )
 
 
 def test_the_indexer_honours_a_deeper_request(app_ctx, provider, sample_transfers):
@@ -1757,7 +1761,8 @@ def test_the_indexer_honours_a_deeper_request(app_ctx, provider, sample_transfer
     run(app_ctx.indexer.run_once())
     provider.calls.clear()
 
-    app_ctx.db.request_history_from("ethereum", 1_000_000)
+    floor = app_ctx.db.history_floor("ethereum")
+    app_ctx.db.request_history("ethereum", floor - 1_000_000)
     result = run(app_ctx.indexer.run_once())
 
     assert result.from_block == 1_000_000

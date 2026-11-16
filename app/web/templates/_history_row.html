@@ -1,0 +1,41 @@
+{# The end of the feed: where indexing stops, and the way to reach further.
+
+   A request is carried out by the background indexer, not by this page, so
+   while one is queued or running this row asks for itself again every few
+   seconds; when it is done the rows it uncovered replace it. Closing the page
+   changes nothing — the work goes on, and the next visit picks up its state. #}
+{% set h = history or {} %}
+{% set poll = '/history/older?before=' ~ (cursor or '') ~ '&after_day=' ~ (day or '') %}
+<tr class="row row--older{{ ' is-busy' if h.active }}" id="history-row"
+    {%- if h.active %}
+    hx-get="{{ poll }}" hx-trigger="every 3s" hx-swap="outerHTML" hx-include="#filters"
+    {%- endif %}>
+  <td colspan="7">
+    {% if h.active %}
+      <span class="row--older__state" role="status">
+        {{ 'Queued:' if h.status == 'queued' else 'Indexing:' }}
+        reaching back to block #{{ '{:,}'.format(h.target) if h.target is not none else '?' }}&hellip;
+      </span>
+      <span class="row--older__hint">this carries on if you close the page</span>
+    {% else %}
+      <form method="post" action="/history/older"
+            hx-post="/history/older" hx-target="closest tr" hx-swap="outerHTML"
+            hx-include="#filters">
+        <input type="hidden" name="before" value="{{ cursor or '' }}">
+        <input type="hidden" name="after_day" value="{{ day or '' }}">
+        {% if h.status == 'failed' %}
+          <span class="row--older__error" role="status">
+            Could not reach block #{{ '{:,}'.format(h.target) if h.target is not none else '?' }}:
+            {{ h.error or 'the provider failed' }}. It is retried with every sync.
+          </span>
+          <button type="submit" class="linkish">Try again now</button>
+        {% else %}
+          <button type="submit" class="linkish">Load {{ older_days }} more days</button>
+        {% endif %}
+        {% if history_floor is not none %}
+          <span class="row--older__hint">indexed back to block #{{ '{:,}'.format(history_floor) }}</span>
+        {% endif %}
+      </form>
+    {% endif %}
+  </td>
+</tr>

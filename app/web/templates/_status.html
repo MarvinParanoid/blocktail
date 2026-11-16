@@ -24,6 +24,8 @@
       <span class="sep">&middot;</span> #{{ status.head_block_text }}
       <span class="sep">&middot;</span> {{ status.updated_text }}
     </span>
-    {% if status.detail %}<span class="status__detail">{{ status.detail }}</span>{% endif %}
+    {% if status.detail %}<span class="status__detail" role="status">{{ status.detail }}</span>
+    {% elif status.balance_detail %}<span class="status__detail status__detail--balances" role="status"
+          title="Indexing is current. The balances shown are the last ones read; they are retried every cycle.">{{ status.balance_detail }}</span>{% endif %}
   </span>
 </div>

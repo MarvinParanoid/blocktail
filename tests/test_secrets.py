@@ -57,9 +57,11 @@ def stored_error(ctx) -> str:
     """The raw column, not the read path, so a redaction applied only while
     rendering does not hide a key that is sitting in the database."""
     row = ctx.db.connect().execute(
-        "SELECT last_error FROM sync_state WHERE chain_id = 'ethereum'"
+        "SELECT last_error, balances_error FROM sync_state WHERE chain_id = 'ethereum'"
     ).fetchone()
-    return (row[0] if row else None) or ""
+    # Balances fail apart from indexing and are stored apart; both are errors
+    # a reader or an operator will see.
+    return " | ".join(text for text in (row or ()) if text)
 
 
 def surfaces(client) -> dict[str, str]:
