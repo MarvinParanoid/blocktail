@@ -88,7 +88,9 @@ def test_choosing_a_holding_filters_the_feed(session, viewport):
     page = session.open("/")
     page.locator(".holdings__more").first.click()
     page.wait_for_selector("#wallet-dialog[open]", timeout=5000)
-    with page.expect_response(lambda r: "/activity?asset=" in r.url):
+    # Through the filter form since S7: /activity?…&asset=<id>.
+    with page.expect_response(lambda r: "/activity?" in r.url and "asset=" in r.url
+                              and "asset=&" not in r.url and not r.url.endswith("asset=")):
         page.locator("#wallet-dialog a.holding__sym", has_text="USDC").first.click()
     page.wait_for_function("() => !document.querySelector('#wallet-dialog').open")
     page.wait_for_timeout(200)

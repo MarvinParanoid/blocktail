@@ -1,8 +1,8 @@
 {% macro wallet_row(wallet) %}
   <div class="wallet{{ ' is-selected' if wallet.selected }}">
-    <a class="wallet__hit" href="?wallet={{ wallet.id }}"
-       hx-get="/activity?wallet={{ wallet.id }}" hx-target="#feed-body" hx-swap="innerHTML"
-       hx-include="this" hx-on:click="selectWallet('{{ wallet.id }}')">
+    {# data-pick: the page routes the choice through the filter form (see
+       pick() in _behaviour.html); the href is what a new tab opens. #}
+    <a class="wallet__hit" href="?wallet={{ wallet.id }}" data-pick="wallet:{{ wallet.id }}">
       <span class="wallet__name">{{ wallet.name }}</span>
       <span class="wallet__value num" title="{{ wallet.value_exact or 'no valuation' }}">
         {{- wallet.value_text or '—' -}}
@@ -38,7 +38,7 @@
 {% endmacro %}
 
 <section id="wallets" class="wallets"
-         hx-get="/wallets" hx-trigger="every 30s, refreshWallets from:body, wallet-changed from:body"
+         hx-get="/wallets" hx-trigger="every 30s, refreshWallets from:body"
          hx-include="#wallet-value, #scope-value" hx-swap="outerHTML">
 
   {# The group heading is the scope control: clicking it narrows the feed to
@@ -48,9 +48,7 @@
     {% set active = not selected_id and scope == value %}
     <a class="wallets__group{{ ' is-selected' if active }}"
        href="{{ '?' if active else '?scope=' ~ value }}"
-       hx-get="/activity{{ '' if active else '?scope=' ~ value }}"
-       hx-target="#feed-body" hx-swap="innerHTML" hx-include="this"
-       hx-on:click="selectScope('{{ 'all' if active else value }}')"
+       data-pick="scope:{{ 'all' if active else value }}"
        title="{{ 'Show every monitored address again' if active else 'Show only ' ~ label }}">
       <span>{{ label }}</span>
       {# No count here: the summary panel above already says "3 accounts". #}
@@ -63,8 +61,7 @@
      phone, where this list is the only scope control there is, it needs to be
      a place you can go rather than a state you undo. #}
   <a class="wallets__group wallets__group--all{{ ' is-selected' if not selected_id and scope == 'all' }}"
-     href="?" hx-get="/activity" hx-target="#feed-body" hx-swap="innerHTML" hx-include="this"
-     hx-on:click="selectScope('all')" title="Every monitored address">
+     href="?" data-pick="scope:all" title="Every monitored address">
     <span>All activity</span>
   </a>
 

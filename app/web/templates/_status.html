@@ -1,5 +1,5 @@
 <div id="topline" class="topline" hx-get="/status"
-     hx-trigger="every 5s, wallet-changed from:body, refreshWallets from:body"
+     hx-trigger="every 5s, refreshWallets from:body"
      hx-include="#wallet-value, #scope-value" hx-swap="outerHTML">
 
   {# The scope belongs in the one bar that never scrolls away. On a narrow

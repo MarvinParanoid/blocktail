@@ -3,7 +3,7 @@
    was wrong after switching wallets too. #}
 {% set hidden_total = dust_hidden + unverified_hidden %}
 <p id="dust-note" class="dust-note{{ ' is-empty' if not (hidden_total or filters.show_dust) }}"
-   hx-get="/dust-note" hx-trigger="filtersApplied from:body" hx-include="#filters"
+   hx-get="/dust-note" hx-trigger="filtersApplied from:body, history-loaded from:body" hx-include="#filters"
    hx-swap="outerHTML">
   {% if filters.show_dust %}
     Showing dust and unverified token transfers.

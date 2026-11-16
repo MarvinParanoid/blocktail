@@ -6,6 +6,25 @@
    amounts are not ours to add together — but they are folded behind the one
    that carries the value, and the feed stops reading as several unrelated
    things that happened at the same second. #}
+{#- A link (or a history entry) to a wallet that is no longer watched. Its
+    feed is empty by the removal rules, and an empty feed with nothing
+    selected reads as "All activity" with nothing in it — so it says what
+    happened, and offers the way back. #}
+{% if missing_wallet and not is_page %}
+  <tr class="row row--notice">
+    <td colspan="7">
+      <p class="scope-missing" role="status">
+        {% if missing_wallet.name %}
+          <strong>{{ missing_wallet.name }}</strong> is no longer watched — it was removed
+          from blocktail, so its activity is not shown here.
+        {% else %}
+          Wallet not found: nothing is watched under this link.
+        {% endif %}
+        <a href="?" data-pick="scope:all">Show all activity</a>
+      </p>
+    </td>
+  </tr>
+{% endif %}
 {% for group in groups %}
   {% for activity in group.rows %}
   {% set is_lead = loop.first %}
@@ -69,8 +88,7 @@
           {# Clicking a counterparty shows every dealing your wallets have had
              with it. The explorer is one deliberate click further out. #}
           <a class="{{ 'label' if party.is_labelled else 'addr' }}" href="?q={{ party.address }}"
-             hx-get="/activity?q={{ party.address }}" hx-target="#feed-body" hx-swap="innerHTML"
-             hx-on:click="event.stopPropagation(); filterByAddress('{{ party.address }}')"
+             data-pick="address:{{ party.address }}"
              title="Show all activity with {{ party.title }}">{{ party.display }}</a>
           {%- if party.is_labelled %}<span class="party__addr">{{ party.short }}</span>{% endif %}
           <a class="ext" href="{{ party.url }}" target="_blank" rel="noopener noreferrer"
@@ -121,7 +139,7 @@
   {% endif %}
   {% endfor %}
 {% else %}
-  {% if not is_page %}
+  {% if not is_page and not missing_wallet %}
     <tr class="row row--empty">
       <td colspan="7">
         {% if filters.is_active %}
@@ -134,7 +152,7 @@
   {% endif %}
 {% endfor %}
 
-{% if not next_cursor and history_floor %}
+{% if not next_cursor and history_floor and not missing_wallet %}
   {# The feed ends where the backfill window was set, not where the history
      does. Saying so, and offering to go further, beats an unexplained stop. #}
   {% set cursor = oldest_cursor or '' %}{% set day = ns.day or '' %}
@@ -148,7 +166,10 @@
          its own scroll region — so the sentinel would never be seen. `intersect`
          observes properly wherever it lives. #}
       hx-trigger="intersect once" hx-swap="outerHTML"
-      hx-on::after-request="document.body.dataset.paged = '1'">
+      {#- The form's queue: a page asked for while the feed is being replaced
+          is dropped, and a new filter waits for a page in flight — whose
+          answer, to the old question, is then not appended (feedQuestion). #}
+      hx-sync="#filters:drop">
     <td colspan="7" class="muted">loading more&hellip;</td>
   </tr>
 {% endif %}

@@ -14,9 +14,7 @@
            selected and copied. #}
         <div class="holding__hit">
           <a class="holding__sym" href="?asset={{ asset.asset_id }}"
-             hx-get="/activity?asset={{ asset.asset_id }}" hx-target="#feed-body" hx-swap="innerHTML"
-             hx-include="#wallet-value, #scope-value"
-             hx-on:click="filterByAsset('{{ asset.asset_id }}'); closeWalletDialog()"
+             data-pick="asset:{{ asset.asset_id }}"
              title="Show only {{ asset.symbol }} in the feed">{{ asset.symbol }}</a>
           {% include "_holding_figures.html" %}
         </div>
