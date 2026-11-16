@@ -603,6 +603,11 @@ framing, `no-store`. The page's script is two static files, `boot.js` and
 `onclick`. No session, cookie or token exists. See
 [docs/security.md](docs/security.md).
 
+In production the container runs as an unprivileged user with a read-only
+root, no capabilities and a memory limit, writes only its volume and `/tmp`,
+and is published on loopback behind a reverse proxy that holds TLS and HSTS;
+compose requires `ALLOWED_HOSTS`. See [docs/production.md](docs/production.md).
+
 ## Chain neutrality
 
 Only Ethereum is implemented, and no plugin framework exists. What is deliberate

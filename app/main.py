@@ -203,7 +203,7 @@ def create_app(
     app.state.ctx = ctx
     # Starlette runs the last one added first. Outermost to innermost:
     # headers (and Host) on every answer -> credentials -> where it came from.
-    app.add_middleware(OriginCheckMiddleware)
+    app.add_middleware(OriginCheckMiddleware, allowed_hosts=settings.allowed_hosts)
     if settings.auth_enabled:
         app.add_middleware(
             BasicAuthMiddleware,

@@ -12,8 +12,10 @@ request came from decides:
   same domain (D-11). With no fetch metadata at all (an old browser, curl) the
   request must carry `HX-Request: true`, which every htmx request does: a page
   on another origin cannot add a custom header without a CORS preflight, and
-  this app answers no preflight. Neither check reads Host or Origin, so a proxy
-  that rewrites Host cannot make the page's own requests look foreign.
+  this app answers no preflight. Neither check reads Host, so a proxy that
+  rewrites Host cannot make the page's own requests look foreign. An Origin,
+  when sent, is never `null`, and — once ALLOWED_HOSTS lists this instance's
+  names — must be one of them (S8b).
 
 * **A read** from another site is taken only as a top-level navigation — a link
   to the app. An `<img src=…/tx/1>` elsewhere would otherwise spend provider
@@ -63,13 +65,29 @@ SECURITY_HEADERS = {
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 STATIC_PREFIX = "/static/"
-# The container healthcheck asks for these by address, never by name, and a
-# DNS-rebinding attacker's request carries the attacker's name.
+# The container healthcheck asks for /healthz by address, from inside the
+# container. That one request, and nothing else, passes a host list by being
+# on loopback: not the page, not the API, not /healthz asked from outside.
+HEALTHCHECK_PATH = "/healthz"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
+LOOPBACK_CLIENTS = frozenset({"127.0.0.1", "::1"})
 
 
-def write_refusal(headers: Headers) -> str | None:
-    """Why a state-changing request is refused, or None to let it through."""
+def write_refusal(headers: Headers, allowed_hosts: tuple[str, ...] = ()) -> str | None:
+    """Why a state-changing request is refused, or None to let it through.
+
+    With ALLOWED_HOSTS set, an Origin, when sent, must also name one of them:
+    a browser on this page always sends its public name, whatever Host the
+    proxy passes on, so a mismatch is something no browser on this page sends.
+    Without the list Origin is not compared — Host may be the proxy's — but a
+    `null` Origin (a sandboxed frame, a data: URL) is never this page."""
+    origin = headers.get("origin")
+    if origin is not None:
+        if origin.strip().lower() == "null":
+            return "Origin: null"
+        if allowed_hosts and "*" not in allowed_hosts and \
+                not _listed(_host_name(origin.split("://", 1)[-1]), allowed_hosts):
+            return "Origin not in ALLOWED_HOSTS"
     site = headers.get("sec-fetch-site")
     if site is not None:
         return None if site in ("same-origin", "none") else f"Sec-Fetch-Site: {site}"
@@ -95,12 +113,7 @@ def _host_name(host: str) -> str:
     return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
 
 
-def host_allowed(host: str, allowed: tuple[str, ...]) -> bool:
-    if not allowed or "*" in allowed:
-        return True
-    name = _host_name(host)
-    if name in LOOPBACK_HOSTS:
-        return True
+def _listed(name: str, allowed: tuple[str, ...]) -> bool:
     for entry in allowed:
         entry = entry.strip().lower()
         if entry.startswith("*.") and name.endswith(entry[1:]):
@@ -110,6 +123,17 @@ def host_allowed(host: str, allowed: tuple[str, ...]) -> bool:
     return False
 
 
+def host_allowed(host: str, allowed: tuple[str, ...], *, path: str = "",
+                 client: str | None = None) -> bool:
+    if not allowed or "*" in allowed:
+        return True
+    name = _host_name(host)
+    if _listed(name, allowed):
+        return True
+    return (name in LOOPBACK_HOSTS and path == HEALTHCHECK_PATH
+            and client in LOOPBACK_CLIENTS)
+
+
 class OriginCheckMiddleware:
     """Refuse a write that another site made, and a read another site embeds.
 
@@ -117,8 +141,9 @@ class OriginCheckMiddleware:
     whatever its origin, so a stranger learns nothing about what would have
     been taken."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, *, allowed_hosts: tuple[str, ...] = ()) -> None:
         self.app = app
+        self.allowed_hosts = tuple(allowed_hosts)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -126,7 +151,8 @@ class OriginCheckMiddleware:
             return
         headers = Headers(scope=scope)
         method = scope["method"].upper()
-        reason = read_refusal(headers) if method in SAFE_METHODS else write_refusal(headers)
+        reason = (read_refusal(headers) if method in SAFE_METHODS
+                  else write_refusal(headers, self.allowed_hosts))
         if reason is None:
             await self.app(scope, receive, send)
             return
@@ -170,7 +196,8 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         host = Headers(scope=scope).get("host", "")
-        if not host_allowed(host, self.allowed_hosts):
+        client = (scope.get("client") or (None,))[0]
+        if not host_allowed(host, self.allowed_hosts, path=scope["path"], client=client):
             log.warning("refused %s for a host not in ALLOWED_HOSTS", scope["path"])
             response = PlainTextResponse("Unknown host.", status_code=400)
             await response(scope, receive, send_with_headers)
