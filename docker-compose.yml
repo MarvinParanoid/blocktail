@@ -35,8 +35,12 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
+    # No `no-new-privileges`: the production host runs Docker from the snap
+    # package, whose AppArmor profile denies every exec in a container started
+    # with it — the container never starts (docs/production.md). The process
+    # is not root, has no capabilities and the image has no setuid program,
+    # so it gave nothing the lines above do not. Do not add it back without
+    # the runtime check deploys make on the server itself.
     # Peak resident memory is about 160 MB on 200k events; 512m is headroom,
     # not a target. tmpfs pages count against it too.
     mem_limit: 512m

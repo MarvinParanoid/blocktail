@@ -28,6 +28,12 @@ RUN adduser --system --group --no-create-home blocktail \
     && mkdir -p /data /config \
     && chown -R blocktail:blocktail /data
 
+# No program in the image may change who runs it: the base ships su, mount,
+# passwd and others setuid root. no-new-privileges would have made the bit
+# inert, but the production host's snap Docker cannot run a container with it
+# (docs/production.md); without the bit there is nothing for it to stop.
+RUN find / -xdev -type f -perm /6000 -exec chmod a-s {} +
+
 USER blocktail
 EXPOSE 8000
 

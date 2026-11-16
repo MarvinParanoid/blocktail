@@ -152,9 +152,14 @@ docker exec "$CONTAINER" sh -c 'touch /srv/x' 2>/dev/null && fail "the root file
 docker exec "$CONTAINER" sh -c 'touch /tmp/x && rm /tmp/x' || fail "/tmp is not writable"
 caps="$(docker exec "$CONTAINER" sh -c "awk '/^CapEff/ {print \$2}' /proc/1/status")"
 [ "$caps" = "0000000000000000" ] || fail "effective capabilities: $caps"
-nnp="$(docker exec "$CONTAINER" sh -c "awk '/^NoNewPrivs/ {print \$2}' /proc/1/status")"
-[ "$nnp" = "1" ] || fail "no-new-privileges is not set"
-say "ok: uid $uid, read-only root, writable /tmp, no capabilities, no-new-privileges"
+# Not no-new-privileges (the production host's snap Docker cannot start a
+# container with it, docs/production.md); instead nothing in the image can
+# raise its privileges: no setuid or setgid file at all.
+# find exits 1 on a directory the app's user may not read; the list it
+# prints is what counts, so its status is not.
+setuid="$(docker exec "$CONTAINER" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null; exit 0')"
+[ -z "$setuid" ] || fail "setuid/setgid files in the image: $setuid"
+say "ok: uid $uid, read-only root, writable /tmp, no capabilities, no setuid or setgid file"
 
 mode="$(docker exec "$CONTAINER" python -c \
   "import sqlite3; print(sqlite3.connect('/data/blocktail.db').execute('PRAGMA journal_mode').fetchone()[0])")"

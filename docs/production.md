@@ -15,7 +15,7 @@ particular one: `watch.example.com` stands for whatever name you serve it as.
                          │  docker port publishing
                          ▼
  container "blocktail"  uvicorn :8000, one worker, uid of `blocktail` (not root)
-   read-only root, /tmp tmpfs 64m, no capabilities, no-new-privileges,
+   read-only root, /tmp tmpfs 64m, no capabilities, no setuid file,
    512m memory, 256 pids, logs rotated (3 × 10 MB)
    ├── /data            named volume blocktail-data: SQLite + -wal/-shm
    ├── /config/wallets.yml   bind mount, read-only
@@ -51,7 +51,7 @@ set `ALLOWED_HOSTS` to the tailnet name or address, and skip the proxy.
 | `read_only: true` | code and system cannot be changed at runtime | |
 | `tmpfs: /tmp:size=64m` | SQLite's temporary sort files | |
 | `cap_drop: [ALL]` | port 8000 needs no capability | |
-| `no-new-privileges:true` | no setuid escalation | |
+| no setuid/setgid file in the image (Dockerfile) | nothing can raise its privileges — the job `no-new-privileges` would do, which this host cannot run (below) | |
 | `mem_limit: 512m`, `pids_limit: 256` | a runaway is contained (peak RSS ≈ 160 MB on 200k events) | |
 | `stop_grace_period: 30s` | uvicorn finishes requests for up to 20 s, then the indexer and database close | |
 | `logging: json-file 3 × 10m` | the log cannot fill the disk | |
@@ -66,6 +66,52 @@ Backups, verification and restores (`scripts/sqlite_backup.py`, run by
 `remote-deploy.sh` and by hand per [operations.md](operations.md)) use a
 separate `docker run --volumes-from blocktail` container, which takes the
 volume but none of the restrictions above, so they keep working unchanged.
+
+## Docker from snap, and no-new-privileges
+
+The production host runs Docker from the snap package (`snap list docker`;
+its data under `/var/snap/docker/`). That Docker runs under the AppArmor
+profile `snap.docker.dockerd`, which denies **every exec** in a container
+started with `security_opt: no-new-privileges:true`. The container never
+starts: the log says `exec /usr/bin/sh: operation not permitted`, the kernel
+log `apparmor="DENIED" operation="exec" info="no new privs"
+profile="snap.docker.dockerd"`. The first production deploy (RC2b.1)
+crash-looped on exactly this; GitHub's runners use Docker from Docker's own
+packages, where it works, so CI could not see it.
+
+So `docker-compose.yml` does not set it. What it protected against — a
+process that is not root becoming root through a setuid program — cannot
+happen here anyway: the Dockerfile removes the setuid and setgid bits from
+every file in the image (the base ships su, mount, passwd and eight more),
+and `scripts/container-smoke.sh` fails if one is found. Everything else
+stays: the image's own user, read-only root, `/tmp` on tmpfs, no
+capabilities, memory and pid limits.
+
+Moving the host to Docker's own packages would make the option usable again;
+that is a change to the server, not to blocktail, and is not assumed.
+
+### Runtime check
+
+Because CI cannot reproduce the host's Docker, every deploy checks it on the
+host itself, before anything stops: `remote-deploy.sh` reads the new compose
+file's restrictions (`docker compose config`) and runs the new image once
+with them — its own user, `--read-only`, the tmpfs, `--cap-drop`,
+`--security-opt`, `--memory`, `--pids-limit` — with `--network none`, no
+volume, no `.env` and no `wallets.yml`; it must exec a shell and import the
+app, as the real start does. If it does not, the deploy stops there: the
+running version, its files and the database are untouched.
+
+The same check by hand, for a compose change you want to try first:
+
+```bash
+docker run --rm --network none --read-only --tmpfs /tmp:size=64m,mode=1777 \
+  --cap-drop ALL --memory 512m --pids-limit 256 [--security-opt <each one>] \
+  --entrypoint sh blocktail:<sha12> -c 'exec python -c "import app.main; print(\"preflight: ok\")"'
+```
+
+Pass: it prints `preflight: ok` and exits 0. Fail: anything else — in
+particular `operation not permitted`; `journalctl -k | grep DENIED` shows
+whether AppArmor refused it.
 
 ## ALLOWED_HOSTS
 
@@ -183,7 +229,7 @@ build a release candidate. Nothing here changes the server.
    `cache-control: no-store`, and exactly one CSP.
 6. **The container runs as configured:**
    `docker inspect blocktail -f '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.SecurityOpt}} {{.HostConfig.Memory}}'`
-   → `blocktail true [ALL] [no-new-privileges:true] 536870912`;
+   → `blocktail true [ALL] [] 536870912`;
    `docker exec blocktail id -u` → not 0.
 7. **The volume is the app's:** `docker exec blocktail ls -ln /data` → owned by
    that uid, `blocktail.db-wal` present while running.
@@ -203,11 +249,40 @@ build a release candidate. Nothing here changes the server.
     the tag away.
 12. **HSTS** added in the proxy once 3 has been seen working.
 
+## Release checklist: right before a production deploy
+
+Read-only, except where marked. Stop at the first item that does not hold.
+
+1. **The release.** A clean checkout at the release commit; its CI run green
+   in every job; `scripts/deploy.sh --check-only` passes.
+2. **The image** (when shipped prebuilt, operations.md): `sha256sum -c
+   SHA256SUMS` in the artifact; after `docker load` (*changes: adds an
+   image*), the id on the server is `config` in `image.json`.
+3. **Production is healthy:** `docker inspect blocktail` → running, healthy,
+   no OOM, no restarts you cannot explain; `/healthz` and `/api/status` (with
+   auth) through HTTPS.
+4. **Room:** at least 300 MB of memory available and 1 GB of disk.
+5. **The way back exists:** `cat last-good`; the image it names is on the
+   host (`docker image inspect`); `ls states/` — the last good version has a
+   state, or what runs now is that version (the deploy saves it first). A
+   state that does not verify is reported and refused by the deploy.
+6. **Configuration:** `ALLOWED_HOSTS` set once, to the served names;
+   `HOST_PORT` set if the host's 8000 is taken by something else.
+7. **Data:** a fresh backup, and a copy of it off the server, checksummed.
+8. **Time:** not within the host's cron windows (backups); someone watches.
+9. **The runtime check is part of the deploy** — it starts one throwaway
+   container from the new image, without network, volume or secrets (*a
+   temporary container; agree to it with the deploy*). A refusal there is the
+   end of the attempt, not something to work around.
+10. **Rollback is ready:** the command from operations.md, "Rolling back the
+    application", with the last good tag filled in; and "When a rollback
+    fails" read once.
+
 What CI checks on every push instead (the `image` job,
 `scripts/container-smoke.sh`): a non-root uid; no planted secret in the image
 files, config or history; compose refusing a `.env` without `ALLOWED_HOSTS`;
 healthy by its own healthcheck; read-only root and writable `/tmp`; no
-effective capabilities and no-new-privileges; WAL in the volume owned by the
+effective capabilities and no setuid or setgid file; WAL in the volume owned by the
 app; auth, the Host and origin policy and the headers through the published
 port; a clean SIGTERM stop; no secret in the log; a backup, verify and restore
 as the deploy does them, and healthy again after.
