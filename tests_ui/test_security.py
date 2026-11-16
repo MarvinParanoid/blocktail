@@ -25,6 +25,21 @@ def settle(page, ms: int = 600):
     page.wait_for_timeout(ms)
 
 
+def open_dialog(page, opener):
+    """Click what opens the wallet dialog, and wait until htmx has wired up
+    the form it loaded. htmx processes swapped-in attributes when it settles,
+    ~20 ms after the form is visible; an Enter in between is a plain form
+    post (the form keeps method and action for no-script use)."""
+    page.evaluate("""() => {
+        window.__dialogSettled = false;
+        document.body.addEventListener('htmx:afterSettle', (e) => {
+            if (e.target.id === 'wallet-dialog-body') window.__dialogSettled = true;
+        });
+    }""")
+    opener.click()
+    page.wait_for_function("() => window.__dialogSettled")
+
+
 @viewports(DESKTOP)
 def test_the_page_is_served_under_the_policy(session, viewport):
     response = session.page.goto(session.stand.url + "/")
@@ -122,7 +137,7 @@ def test_every_control_works_under_the_policy_on_a_wide_screen(fresh_session, vi
     page.wait_for_selector("#wallet-dialog[open] .sheet__cancel")
     page.locator("#wallet-dialog .sheet__cancel").click()
     page.wait_for_function("() => !document.getElementById('wallet-dialog').open")
-    page.locator(".add-wallet-link").click()
+    open_dialog(page, page.locator(".add-wallet-link"))
     page.wait_for_selector("#wallet-dialog[open] input[name=address]")
     page.fill("#wallet-dialog input[name=name]", "Removable")
     page.fill("#wallet-dialog input[name=address]", REMOVABLE)
@@ -140,7 +155,7 @@ def test_every_control_works_under_the_policy_on_a_wide_screen(fresh_session, vi
     assert page.evaluate("() => navigator.clipboard.readText()").lower() == REMOVABLE.lower()
     page.locator(menu).click()  # closes
     page.locator(menu).click()
-    page.locator(".wallet__menu[open] button", has_text="Rename").click()
+    open_dialog(page, page.locator(".wallet__menu[open] button", has_text="Rename"))
     page.wait_for_selector("#wallet-dialog[open] input[name=name]")
     page.fill("#wallet-dialog input[name=name]", "Renamed")
     page.keyboard.press("Enter")
@@ -232,7 +247,7 @@ def test_basic_auth_in_a_browser_under_the_policy(browser, guarded_stand):
     try:
         page.goto(stand.url + "/")
         page.wait_for_load_state("networkidle")
-        page.locator(".add-wallet-link").click()
+        open_dialog(page, page.locator(".add-wallet-link"))
         page.wait_for_selector("#wallet-dialog[open] input[name=address]")
         page.fill("#wallet-dialog input[name=name]", "Removable")
         page.fill("#wallet-dialog input[name=address]", REMOVABLE)

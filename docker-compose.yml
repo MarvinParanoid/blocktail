@@ -12,14 +12,44 @@ services:
     environment:
       # Clock times and the Today/Yesterday headings render in this timezone.
       TZ: ${TZ:-UTC}
+      # The names this instance is served as, from .env. Required here, and
+      # only here: compose refuses to start without it, so a deployment never
+      # answers to whatever Host a client sends. The repository names no
+      # domain — see docs/production.md.
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS in .env to the name(s) this instance is served as}
     ports:
-      # Loopback only. This app has no authentication by design — put Caddy,
-      # nginx or Tailscale in front of it. Change to "8000:8000" only if the
-      # port is already protected by something else.
+      # Loopback only: the reverse proxy on the host (Caddy) is the way in.
+      # The app has its own basic auth (AUTH_USER/AUTH_PASSWORD), but TLS and
+      # the public port belong to the proxy. Never publish 0.0.0.0.
       - "127.0.0.1:${HOST_PORT:-8000}:8000"
     volumes:
       - ./wallets.yml:/config/wallets.yml:ro
       - blocktail-data:/data
+    # Least privilege. The app writes only the SQLite database (and its -wal
+    # and -shm files) in /data, and SQLite's temporary files in /tmp; the
+    # rest of the filesystem is read-only. It binds 8000 as a plain user, so
+    # it needs no capability at all. Backups and restores run in a separate
+    # `docker run --volumes-from` container (scripts/remote-deploy.sh,
+    # docs/operations.md), which these settings do not constrain.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Peak resident memory is about 160 MB on 200k events; 512m is headroom,
+    # not a target. tmpfs pages count against it too.
+    mem_limit: 512m
+    pids_limit: 256
+    # uvicorn gives open requests 20 s (--timeout-graceful-shutdown), then the
+    # indexer and the database are closed; compose waits longer than that
+    # before it sends SIGKILL.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)"]
       interval: 30s

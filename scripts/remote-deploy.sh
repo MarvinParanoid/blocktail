@@ -89,6 +89,17 @@ acquire_lock() {  # <what> [<path to remove if refused>]
   printf '%s pid %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$what" > "$LOCK_FILE.owner"
 }
 
+# ------------------------------------------------------------- preflight
+
+# docker-compose.yml requires ALLOWED_HOSTS (S8b) and compose would refuse
+# to start without it — after the build and the backup, with an error about
+# interpolation. Asked here first, so the answer is plain and nothing moves.
+require_allowed_hosts() {
+  grep -Eq '^[[:space:]]*(export[[:space:]]+)?ALLOWED_HOSTS=[[:space:]]*[^[:space:]#]' "$REMOTE/.env" \
+    || die "ALLOWED_HOSTS is not set in $REMOTE/.env — set it to the name(s) this instance is" \
+           "served as (e.g. ALLOWED_HOSTS=watch.example.com; docs/production.md); nothing was changed"
+}
+
 # ------------------------------------------------------------------ state
 
 container_exists() { "$DOCKER" inspect --type container "$CONTAINER" >/dev/null 2>&1; }
@@ -282,6 +293,7 @@ deploy() {
     || die "$RELEASE is not a complete release"
   [ -f "$REMOTE/.env" ] || die "$REMOTE/.env is missing (it stays on the server and is never shipped)"
   [ -f "$REMOTE/wallets.yml" ] || die "$REMOTE/wallets.yml is missing or not a file"
+  require_allowed_hosts
   PROJECT="$(project_name)"
   say "release $SHA, compose project '$PROJECT'"
 
@@ -349,6 +361,8 @@ rollback() {  # [<image tag>]
   tag="${1:-$(last_good_tag)}"
   [ -n "$tag" ] || die "no version is recorded as good on this host; name an image tag"
   id="$(image_id "$tag")" || die "no image $tag on this host (docker image ls $IMAGE_REPO)"
+  [ -f "$REMOTE/.env" ] || die "$REMOTE/.env is missing"
+  require_allowed_hosts
   recorded="$(last_good_id)"
   if [ "$tag" = "$(last_good_tag)" ] && [ "$id" != "$recorded" ]; then
     die "$tag now points at $id, not at $recorded which passed its health check" \

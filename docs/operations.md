@@ -114,6 +114,16 @@ runs the deployed image.
 files happen to be in `$REMOTE` — on a server deployed by the old script, a
 stale copy of the code — and tags the result as the deployed version.
 
+### Before the first deploy after S8b
+
+`docker-compose.yml` requires `ALLOWED_HOSTS` in the server's `.env`, and
+`remote-deploy.sh` checks it before it builds or backs anything up: a deploy
+or a rollback without it stops at once and changes nothing. Add the name the
+proxy serves the app as (`ALLOWED_HOSTS=watch.example.com`) once. The
+container now also runs with a read-only root, no capabilities and a memory
+limit; backups and restores run in their own `docker run --volumes-from`
+container and are not affected. See [production.md](production.md).
+
 ### The first deploy with this script
 
 A server set up by the earlier `deploy.sh` has the code unpacked directly in

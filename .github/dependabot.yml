@@ -1,0 +1,22 @@
+# Proposals only: every update arrives as a pull request and runs the full
+# workflow, including the container smoke. Nothing is merged or deployed
+# without a person.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # The base image. A release candidate pins it by digest (docs/production.md);
+  # this keeps that digest current.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

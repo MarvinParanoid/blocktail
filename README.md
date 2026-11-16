@@ -99,7 +99,8 @@ You need a free Alchemy API key for Ethereum mainnet
 ```bash
 git clone <your-fork> blocktail && cd blocktail
 
-cp .env.example .env                 # then put your key in ALCHEMY_API_KEY
+cp .env.example .env                 # then put your key in ALCHEMY_API_KEY,
+                                     # and ALLOWED_HOSTS=localhost to try it locally
 cp wallets.example.yml wallets.yml   # then put your addresses in it
 
 docker compose up -d --build
@@ -220,7 +221,7 @@ was already indexed; removing one keeps its history and simply stops showing it.
 | `BACKFILL_DAYS` | `90` | How far back the feed reaches. |
 | `REORG_DEPTH` | `64` | Blocks re-scanned each cycle to correct reorgs. |
 | `AUTH_USER` / `AUTH_PASSWORD` | *(unset)* | Require HTTP basic auth when both are set. |
-| `ALLOWED_HOSTS` | *(any)* | Comma-separated names this instance is served as; any other Host gets 400. Loopback is always allowed. |
+| `ALLOWED_HOSTS` | *(any)*; **required by docker-compose.yml** | Comma-separated names this instance is served as; any other Host gets 400. Loopback only for the container's own healthcheck. |
 | `MAX_TOKEN_BALANCES` | `10` | Token balances shown per wallet. |
 | `MAX_TOKEN_LOOKUPS` | `200` | Cap on token metadata lookups per wallet per sync. |
 | `DUST_BELOW_USD_CENTS` | `100` | A holding under this must earn its place another way. |
@@ -286,6 +287,7 @@ the size of your history.
 git clone <your-fork> blocktail && cd blocktail
 
 cp .env.example .env                 # put your key in ALCHEMY_API_KEY, set TZ
+                                     # and ALLOWED_HOSTS (the name you serve it as)
 cp wallets.example.yml wallets.yml   # put your addresses in it
 
 docker compose up -d --build
@@ -350,6 +352,10 @@ watch.example.com {
 ```
 
 Over Tailscale, skip the proxy and reach the VPS's tailnet address directly.
+
+The intended production layout, the full Caddy and nginx configuration, HSTS,
+and the checks to run on the server before a release are in
+[docs/production.md](docs/production.md).
 
 The app sets its own security headers and reads no `X-Forwarded-*` header, so
 the proxy needs nothing beyond `reverse_proxy`. Whether it keeps the Host

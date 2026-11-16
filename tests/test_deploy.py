@@ -405,6 +405,10 @@ sys.exit(f"fake docker: unhandled {args}")
 '''
 
 
+# What the server's .env holds: never shipped, never touched by a deploy.
+SERVER_ENV = "ALCHEMY_API_KEY=server-side-only\nALLOWED_HOSTS=watch.example.test\n"
+
+
 class Stand:
     """A local stand-in for the VPS: a remote directory, a data volume, and
     doubles for ssh and docker on the command line."""
@@ -414,7 +418,7 @@ class Stand:
         self.repo = make_project_with_real_scripts(tmp_path)
         self.remote = tmp_path / "server" / "blocktail-build"
         self.remote.mkdir(parents=True)
-        (self.remote / ".env").write_text("ALCHEMY_API_KEY=server-side-only\n")
+        (self.remote / ".env").write_text(SERVER_ENV)
         (self.remote / "wallets.yml").write_text("wallets: []\n")
         self.data = tmp_path / "volume"
         self.data.mkdir()
@@ -526,7 +530,7 @@ def test_a_first_deploy_has_nothing_to_back_up(stand):
     assert stand.docker["container"]["config_image"] == f"blocktail:{sha}"
     assert stand.last_good()[0] == f"blocktail:{sha}"
     assert "healthz is liveness only" in result.stderr
-    assert (stand.remote / ".env").read_text() == "ALCHEMY_API_KEY=server-side-only\n"
+    assert (stand.remote / ".env").read_text() == SERVER_ENV
     release = stand.remote / "releases" / sha
     assert not (release / ".env").exists() and (release / "scripts" / "sqlite_backup.py").exists()
     assert not list((stand.remote / "releases").glob(".incoming-*")), "moved into place"
@@ -714,6 +718,37 @@ def test_the_first_scripted_deploy_adopts_what_is_running_as_good(stand):
 
     assert stand.remote_script("rollback").returncode == 0
     assert stand.docker["container"]["image_id"] == "sha256:legacy000000000"
+
+
+@pytest.mark.parametrize("env", [
+    "ALCHEMY_API_KEY=server-side-only\n",
+    "ALCHEMY_API_KEY=server-side-only\nALLOWED_HOSTS=\n",
+    "ALCHEMY_API_KEY=server-side-only\n# ALLOWED_HOSTS=watch.example.test\n",
+])
+def test_a_deploy_without_allowed_hosts_is_refused_before_anything_changes(stand, env):
+    """S8b: production serves its own names only. compose would refuse too —
+    this says why, before a build, a backup or a stop."""
+    v1 = deployed(stand, "v1")
+    compose_before = (stand.remote / "docker-compose.yml").read_text()
+    (stand.remote / ".env").write_text(env)
+    v2 = stand.commit("v2")
+    result = stand.deploy()
+    assert result.returncode != 0
+    assert "ALLOWED_HOSTS" in result.stderr and "nothing was changed" in result.stderr
+    assert f"blocktail:{v2}" not in stand.docker["images"], "not built"
+    assert stand.pinned() == f"blocktail:{v1}"
+    assert (stand.remote / "docker-compose.yml").read_text() == compose_before
+    assert stand.backups() == []
+
+
+def test_a_rollback_without_allowed_hosts_says_why_instead_of_failing_in_compose(stand):
+    v1 = deployed(stand, "v1")
+    deployed(stand, "v2")
+    (stand.remote / ".env").write_text("ALCHEMY_API_KEY=server-side-only\n")
+    result = stand.remote_script("rollback", f"blocktail:{v1}")
+    assert result.returncode != 0
+    assert "ALLOWED_HOSTS" in result.stderr
+    assert stand.pinned() != f"blocktail:{v1}"
 
 
 def test_rollback_with_nothing_recorded_asks_for_a_tag(stand):
