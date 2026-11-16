@@ -141,6 +141,11 @@ def create_app(
         if applied:
             log.info("applied migrations: %s", ", ".join(map(str, applied)))
 
+        # A wrong token size left by an older version is corrected before the
+        # first page is served, not on the next lookup that may never come.
+        if listed := getattr(ctx.chain, "token_decimals", None):
+            ctx.db.adopt_listed_decimals(ctx.chain.chain_id, listed)
+
         accounts = ctx.db.apply_watch_config(ctx.config)
         # A wallet added to the config after some history was already indexed
         # must pick up that history, so re-derive the account columns.

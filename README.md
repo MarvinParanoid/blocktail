@@ -14,7 +14,8 @@ chronological feed of everything that touched them.
 ![blocktail watching Vitalik's and the Ethereum Foundation's addresses](docs/blocktail.png)
 
 *Live mainnet data. The struck-through NMT figure is a scam token whose nominal
-quote would otherwise have made the total read $4.98 quadrillion — see
+quote would otherwise have made the total read $4.98 quadrillion (the current
+version prints the word "excluded" in place of that quote) — see
 [Valuation](ARCHITECTURE.md#valuation). The 572 hidden transfers are dust and
 tokens nothing vouches for; they are indexed and one click away.*
 

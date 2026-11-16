@@ -1,0 +1,14 @@
+{# Amount and value of one holding, shared by the summary strip and the
+   holdings sheet. An excluded asset gets a word, not its quote: the quote is
+   the one figure the total refused to believe. Unknown decimals are said, not
+   rendered as whole tokens. #}
+<span class="holding__amount num"
+      {%- if asset.raw_units %} title="Decimals unknown: raw on-chain units, not valued"{% endif %}>
+  {{- asset.amount_text }}{% if asset.raw_units %} <span class="kind">raw</span>{% endif -%}
+</span>
+{% if asset.excluded %}
+  <span class="holding__value holding__value--excluded"
+        title="Its price quote is not credible, so it is left out of the total">excluded</span>
+{% else %}
+  <span class="holding__value num">{{ asset.value_text or '' }}</span>
+{% endif %}

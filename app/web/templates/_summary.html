@@ -112,8 +112,7 @@
                  hx-include="#wallet-value, #scope-value" hx-on:click="filterByAsset('{{ asset.asset_id }}')"
                  title="{{ asset.amount_text }} {{ asset.symbol }}{% if asset.value_text %} · {{ asset.value_text }}{% endif %} — filter the feed to it">
                 <span class="holding__sym">{{ asset.symbol }}</span>
-                <span class="holding__amount num">{{ asset.amount_text }}</span>
-                <span class="holding__value num">{{ asset.value_text or '' }}</span>
+                {% include "_holding_figures.html" %}
               </a>
             </li>
           {% endfor %}

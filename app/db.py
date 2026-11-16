@@ -31,6 +31,12 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _VERSION_RE = re.compile(r"^(\d+)_")
 
 
+def _decimals(alias: str) -> str:
+    """The believed decimals of an asset, NULL when unknown. Every read goes
+    through this, so no caller can mistake "unknown" for zero."""
+    return f"CASE WHEN {alias}.decimals_known THEN {alias}.decimals END AS decimals"
+
+
 class Database:
     """Owns the SQLite file. Connections are per-thread; FastAPI runs sync
     endpoints in a threadpool and the indexer writes from another thread."""
@@ -41,7 +47,7 @@ class Database:
         SELECT a.id, a.chain_id, a.tx_hash, a.block_number, a.block_timestamp, a.kind,
                a.amount_raw, a.from_address, a.to_address,
                a.from_account_id, a.to_account_id,
-               a.asset_id, ast.contract_address, ast.symbol, ast.decimals,
+               a.asset_id, ast.contract_address, ast.symbol, {decimals},
                fa.name AS from_account_name, ta.name AS to_account_name,
                fl.label AS from_label, tl.label AS to_label
         FROM activities a
@@ -50,7 +56,7 @@ class Database:
         LEFT JOIN accounts ta ON ta.id = a.to_account_id
         LEFT JOIN labels fl ON fl.chain_id = a.chain_id AND fl.address = a.from_address
         LEFT JOIN labels tl ON tl.chain_id = a.chain_id AND tl.address = a.to_address
-    """
+    """.format(decimals=_decimals("ast"))
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
@@ -297,36 +303,72 @@ class Database:
     # ---------------------------------------------------------------- assets
 
     def get_or_create_asset(self, asset: AssetRef) -> int:
+        """The id of an asset, created on first sight.
+
+        Decimals only ever move from unknown to known — a later failed lookup
+        never downgrades a value already learned, and a value learned later
+        replaces an unknown one, together with the stub symbol that came with it.
+        """
         conn = self.connect()
+        known = asset.decimals is not None
         row = conn.execute(
-            "SELECT id, symbol, decimals FROM assets WHERE chain_id = ? AND contract_address = ?",
+            "SELECT id, symbol, decimals_known FROM assets"
+            " WHERE chain_id = ? AND contract_address = ?",
             (asset.chain_id, asset.contract_address),
         ).fetchone()
         if row is not None:
-            # Late-arriving metadata (a token whose symbol we could not resolve
-            # the first time) should upgrade the stored row.
-            if asset.symbol and (row["symbol"] != asset.symbol or row["decimals"] != asset.decimals):
-                if not row["symbol"] or row["decimals"] == 0:
-                    conn.execute(
-                        "UPDATE assets SET symbol = ?, decimals = ? WHERE id = ?",
-                        (asset.symbol, asset.decimals, row["id"]),
-                    )
+            if known and not row["decimals_known"]:
+                conn.execute(
+                    "UPDATE assets SET symbol = ?, decimals = ?, decimals_known = 1 WHERE id = ?",
+                    (asset.symbol or row["symbol"], asset.decimals, row["id"]),
+                )
+            elif asset.symbol and not row["symbol"]:
+                conn.execute("UPDATE assets SET symbol = ? WHERE id = ?", (asset.symbol, row["id"]))
             return row["id"]
 
         cursor = conn.execute(
-            "INSERT INTO assets (chain_id, contract_address, symbol, decimals)"
-            " VALUES (?, ?, ?, ?)"
+            "INSERT INTO assets (chain_id, contract_address, symbol, decimals, decimals_known)"
+            " VALUES (?, ?, ?, ?, ?)"
             " ON CONFLICT (chain_id, contract_address) DO UPDATE SET symbol = excluded.symbol"
             " RETURNING id",
-            (asset.chain_id, asset.contract_address, asset.symbol, asset.decimals),
+            (
+                asset.chain_id,
+                asset.contract_address,
+                asset.symbol,
+                asset.decimals if known else 0,
+                int(known),
+            ),
         )
         return cursor.fetchone()[0]
+
+    def adopt_listed_decimals(self, chain_id: str, listed) -> int:
+        """Correct stored decimals from a reviewed list, ``listed(contract)``
+        returning the list's value or ``None``. Run at startup, so a wrong
+        value left by an older version does not wait for the next lookup —
+        or last forever for a token no longer held."""
+        conn = self.connect()
+        fixes = []
+        for row in conn.execute(
+            "SELECT id, contract_address, decimals, decimals_known FROM assets"
+            " WHERE chain_id = ? AND contract_address <> ''",
+            (chain_id,),
+        ):
+            value = listed(row["contract_address"])
+            if value is not None and (not row["decimals_known"] or row["decimals"] != value):
+                fixes.append((value, row["id"]))
+        if fixes:
+            with self._write_lock:
+                conn.executemany(
+                    "UPDATE assets SET decimals = ?, decimals_known = 1 WHERE id = ?", fixes
+                )
+            log.info("took decimals for %d asset(s) from the token list", len(fixes))
+        return len(fixes)
 
     def feed_assets(self) -> list[sqlite3.Row]:
         """Assets that actually appear in the feed, for the filter dropdown."""
         return list(
             self.connect().execute(
-                "SELECT a.id, a.chain_id, a.contract_address, a.symbol, a.decimals,"
+                f"SELECT a.id, a.chain_id, a.contract_address, a.symbol, {_decimals('a')},"
                 "       COUNT(act.id) AS uses"
                 " FROM assets a JOIN activities act ON act.asset_id = a.id"
                 " GROUP BY a.id ORDER BY uses DESC, a.symbol"
@@ -587,7 +629,8 @@ class Database:
     def all_assets(self) -> list[sqlite3.Row]:
         return list(
             self.connect().execute(
-                "SELECT id, chain_id, contract_address, symbol, decimals FROM assets"
+                f"SELECT id, chain_id, contract_address, symbol, {_decimals('assets')}"
+                " FROM assets"
             )
         )
 
@@ -655,7 +698,7 @@ class Database:
             """
             SELECT b.account_id, b.amount_raw, b.updated_at,
                    ast.id AS asset_id, ast.chain_id, ast.contract_address,
-                   ast.symbol, ast.decimals,
+                   ast.symbol, {decimals},
                    EXISTS (
                        SELECT 1 FROM activities act
                        WHERE act.asset_id = ast.id
@@ -668,7 +711,7 @@ class Database:
                      ast.contract_address <> '' ,
                      seen_in_feed DESC,
                      ast.symbol
-            """
+            """.format(decimals=_decimals("ast"))
         )
         grouped: dict[int, list[sqlite3.Row]] = {}
         for row in rows:
@@ -721,7 +764,7 @@ class Database:
         """Assets any monitored account currently holds — the set worth pricing."""
         return list(
             self.connect().execute(
-                "SELECT DISTINCT a.id, a.chain_id, a.contract_address, a.symbol, a.decimals"
+                f"SELECT DISTINCT a.id, a.chain_id, a.contract_address, a.symbol, {_decimals('a')}"
                 " FROM assets a"
                 " JOIN balances b ON b.asset_id = a.id"
                 " JOIN accounts acc ON acc.id = b.account_id AND acc.active = 1"

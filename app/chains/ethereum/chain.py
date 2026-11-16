@@ -10,6 +10,7 @@ import re
 
 from app.chains.ethereum.keccak import keccak256
 from app.chains.ethereum.known_addresses import label_for
+from app.chains.ethereum.known_assets import listed_decimals
 
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
@@ -92,3 +93,7 @@ class EthereumChain:
 
     def explorer_token_url(self, contract_address: str) -> str:
         return f"{self.explorer_base}/token/{self.display_address(contract_address)}"
+
+    def token_decimals(self, contract_address: str) -> int | None:
+        """Decimals the vendored token list states for this exact contract."""
+        return listed_decimals(contract_address)

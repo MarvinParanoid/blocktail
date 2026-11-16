@@ -13,13 +13,18 @@ from app.chains import Chain
 from app.models import NATIVE, SyncStatus, TransactionCost
 
 
-def format_amount(amount_raw: int | str, decimals: int, *, max_dp: int = 6) -> str:
+def format_amount(amount_raw: int | str, decimals: int | None, *, max_dp: int = 6) -> str:
     """Exact decimal rendering of a raw integer amount. Never uses a float.
 
     Token supplies can run to tens of digits, which overflows decimal's default
     28-digit context, so the arithmetic runs in a context sized to the input.
+
+    ``decimals=None`` means the chain would not say: the raw integer is shown
+    as it is, and the view marks it as raw units rather than whole tokens.
     """
     raw = int(amount_raw)
+    if decimals is None:
+        return f"{raw:,}"
     if raw == 0:
         return "0"
 
@@ -163,6 +168,8 @@ class ActivityView:
     tx_url: str
     block_number: int
     block_url: str
+    # Decimals unknown: amount_text is raw on-chain units, and nothing is valued.
+    raw_units: bool = False
 
     @property
     def cursor(self) -> tuple[int, int]:
@@ -214,8 +221,12 @@ def build_activity(
     chain: Chain,
     scope: set[int] | None = None,
     prices: dict[int, sqlite3.Row] | None = None,
+    excluded: frozenset[int] = frozenset(),
 ) -> ActivityView:
     """Render one transfer from the point of view of the current scope.
+
+    ``excluded`` are assets whose quote the portfolio refused to believe; a
+    row of one is not given the value the total was protected from.
 
     A movement between two known accounts collapses to ``Main → Cold`` only when
     both ends are inside the scope being viewed — that is the case where it would
@@ -262,14 +273,10 @@ def build_activity(
 
     # Valued at the current price, not the price at the time: this is a monitor,
     # not a ledger. It answers "how much is that" for a row you are looking at.
-    value_text = None
     value_usd = None
-    if prices and (quote := prices.get(row["asset_id"])):
-        with localcontext() as context:
-            context.prec = 40
-            amount = Decimal(int(row["amount_raw"])).scaleb(-row["decimals"])
-            value_usd = amount * Decimal(quote["price"])
-            value_text = format_money(value_usd)
+    if prices and row["asset_id"] not in excluded:
+        value_usd = value_of(row["amount_raw"], row["decimals"], prices.get(row["asset_id"]))
+    value_text = format_money(value_usd)
 
     return ActivityView(
         id=row["id"],
@@ -297,6 +304,7 @@ def build_activity(
         tx_url=chain.explorer_tx_url(row["tx_hash"]),
         block_number=row["block_number"],
         block_url=chain.explorer_block_url(row["block_number"]),
+        raw_units=row["decimals"] is None,
     )
 
 
@@ -335,45 +343,16 @@ def build_wallets(
     relevance: Relevance | None = None,
     max_share: float = 0.9,
 ) -> list[WalletView]:
-    rules = relevance or Relevance()
+    # Valued exactly as the panel values it, with the verdicts made once for
+    # the whole group. Two different sums for the same wallet — one here, one
+    # in the summary — is a bug the reader has no way to resolve, and so is a
+    # list of wallets that does not add up to the total above it.
+    verdicts = group_verdicts(accounts, balances, prices or {}, relevance or Relevance(), max_share)
     views: list[WalletView] = []
 
     for account in accounts:
-        # Valued exactly as the panel values it. Two different sums for the same
-        # wallet — one in the sidebar, one in the summary — is a bug the reader
-        # has no way to resolve.
-        entries: list[tuple[Decimal | None, str, AssetTotal]] = []
-        contracts: dict[int, str] = {}
-        for row in balances.get(account.id, []):
-            contracts[row["asset_id"]] = row["contract_address"]
-            value: Decimal | None = None
-            if prices and (quote := prices.get(row["asset_id"])):
-                with localcontext() as context:
-                    context.prec = 40
-                    amount = Decimal(int(row["amount_raw"])).scaleb(-row["decimals"])
-                    value = amount * Decimal(quote["price"])
-            entries.append(
-                (
-                    value,
-                    row["symbol"],
-                    AssetTotal(
-                        asset_id=row["asset_id"],
-                        symbol=row["symbol"],
-                        amount_text="",
-                        value_text=None,
-                        is_native=row["contract_address"] == NATIVE,
-                        url=None,
-                    ),
-                )
-            )
-
-        implausible = implausible_assets(entries, contracts, rules, max_share)
-        priced = [
-            value
-            for value, _, asset in entries
-            if value is not None and asset.asset_id not in implausible
-        ]
-        total = sum(priced, Decimal(0)) if priced else None
+        holdings = aggregate_holdings([account], balances)
+        total = counted_value(holdings, prices or {}, verdicts[account.is_owned]).total
 
         views.append(
             WalletView(
@@ -495,13 +474,66 @@ class AssetTotal:
     url: str | None
     excluded: bool = False
     hidden: bool = False     # indexed and kept, just not worth showing by default
+    raw_units: bool = False  # decimals unknown: the amount is raw on-chain units
 
 
-def implausible_assets(
-    entries: list[tuple[Decimal | None, str, AssetTotal]],
-    contracts: dict[int, str],
-    rules: Relevance,
-    max_share: float,
+def value_of(amount_raw: int | str, decimals: int | None, quote) -> Decimal | None:
+    """What an amount is worth, or ``None`` when that cannot honestly be said:
+    no price, or decimals the chain would not state. Unknown is never zero."""
+    if quote is None or decimals is None:
+        return None
+    with localcontext() as context:
+        context.prec = 40
+        return Decimal(int(amount_raw)).scaleb(-decimals) * Decimal(quote["price"])
+
+
+@dataclass(frozen=True, slots=True)
+class Holding:
+    """One asset's balance summed over some accounts."""
+
+    asset_id: int
+    symbol: str
+    contract: str
+    decimals: int | None
+    raw: int
+
+    @property
+    def is_native(self) -> bool:
+        return self.contract == NATIVE
+
+
+def aggregate_holdings(accounts, balances: dict[int, list[sqlite3.Row]]) -> dict[int, Holding]:
+    raw: dict[int, int] = {}
+    first: dict[int, sqlite3.Row] = {}
+    for account in accounts:
+        for row in balances.get(account.id, []):
+            raw[row["asset_id"]] = raw.get(row["asset_id"], 0) + int(row["amount_raw"])
+            first.setdefault(row["asset_id"], row)
+    return {
+        asset_id: Holding(
+            asset_id=asset_id,
+            symbol=first[asset_id]["symbol"],
+            contract=first[asset_id]["contract_address"],
+            decimals=first[asset_id]["decimals"],
+            raw=amount,
+        )
+        for asset_id, amount in raw.items()
+        if amount > 0
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class Verdicts:
+    """Which held assets count towards a total. Decided once per group of
+    accounts and applied to every view of it — the sidebar row, the panel,
+    one wallet or all of them — so they cannot disagree."""
+
+    hidden: frozenset[int] = frozenset()    # dust and the unvouched: not shown
+    excluded: frozenset[int] = frozenset()  # shown, but the quote is not believed
+
+
+def _implausible(
+    values: dict[int, Decimal], holdings: dict[int, Holding], rules: Relevance, max_share: float
 ) -> set[int]:
     """Assets whose value is too large to believe, given what they are.
 
@@ -511,28 +543,96 @@ def implausible_assets(
     balance is often the whole of it, and calling that implausible is worse than
     the problem — so only assets nothing vouches for are ever candidates.
     """
-    priced = [item for item in entries if item[0] is not None]
-    if not max_share or len(priced) < 2:
+    if not max_share or len(values) < 2:
         return set()
-
     candidates = sorted(
         (
-            item
-            for item in priced
-            if not item[2].is_native
-            and not rules.is_vouched_for(item[2].asset_id, contracts[item[2].asset_id])
+            (value, asset_id)
+            for asset_id, value in values.items()
+            if not holdings[asset_id].is_native
+            and not rules.is_vouched_for(asset_id, holdings[asset_id].contract)
         ),
-        key=lambda item: item[0],
         reverse=True,
     )
-
     excluded: set[int] = set()
-    remaining = sum((item[0] for item in priced), Decimal(0))
-    for value, _, asset in candidates:
+    remaining = sum(values.values(), Decimal(0))
+    for value, asset_id in candidates:
         if remaining > 0 and value / remaining > Decimal(str(max_share)):
-            excluded.add(asset.asset_id)
+            excluded.add(asset_id)
             remaining -= value
     return excluded
+
+
+def judge_holdings(
+    holdings: dict[int, Holding], prices, rules: Relevance, max_share: float
+) -> Verdicts:
+    """Hidden first, then implausible among what is left: a forged ticker or a
+    speck of dust must not count towards the share a scam quote is measured
+    against."""
+    values = {h.asset_id: value_of(h.raw, h.decimals, prices.get(h.asset_id))
+              for h in holdings.values()}
+    hidden = {
+        asset_id
+        for asset_id, holding in holdings.items()
+        if not rules.is_relevant(asset_id, holding.contract, values[asset_id])
+    }
+    shown_priced = {
+        asset_id: value
+        for asset_id, value in values.items()
+        if value is not None and asset_id not in hidden
+    }
+    return Verdicts(
+        hidden=frozenset(hidden),
+        excluded=frozenset(_implausible(shown_priced, holdings, rules, max_share)),
+    )
+
+
+def group_verdicts(
+    accounts, balances, prices, rules: Relevance, max_share: float
+) -> dict[bool, Verdicts]:
+    """Verdicts for my accounts (``True``) and for the watched ones (``False``),
+    each judged over its whole group."""
+    return {
+        owned: judge_holdings(
+            aggregate_holdings([a for a in accounts if a.is_owned == owned], balances),
+            prices, rules, max_share,
+        )
+        for owned in (True, False)
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class Counted:
+    total: Decimal | None
+    native: Decimal | None
+    tokens: Decimal
+    any_token_priced: bool
+
+
+def counted_value(holdings: dict[int, Holding], prices, verdicts: Verdicts) -> Counted:
+    """The one sum both the sidebar and the panel show: what is priced, has
+    known decimals, and is neither hidden nor excluded. ``total`` is ``None``
+    when nothing at all could be valued — unknown, not zero."""
+    native: Decimal | None = None
+    tokens = Decimal(0)
+    any_token = False
+    # Summed in a wide context: the default 28 digits rounds a large sum, and
+    # the old add-then-subtract of an absurd quote lost the dollars below it.
+    with localcontext() as context:
+        context.prec = 80
+        for holding in holdings.values():
+            if holding.asset_id in verdicts.hidden or holding.asset_id in verdicts.excluded:
+                continue
+            value = value_of(holding.raw, holding.decimals, prices.get(holding.asset_id))
+            if value is None:
+                continue
+            if holding.is_native:
+                native = value
+            else:
+                tokens += value
+                any_token = True
+        total = None if native is None and not any_token else (native or Decimal(0)) + tokens
+    return Counted(total=total, native=native, tokens=tokens, any_token_priced=any_token)
 
 
 @dataclass(slots=True)
@@ -630,101 +730,70 @@ def build_portfolio(
     now = now if now is not None else int(time.time())
     if selected_id is not None:
         in_scope = [a for a in accounts if a.id == selected_id]
+        group_owned = in_scope[0].is_owned if in_scope else True
     elif watched_scope:
         in_scope = [a for a in accounts if not a.is_owned]
+        group_owned = False
     else:
         in_scope = [a for a in accounts if a.is_owned]
+        group_owned = True
 
-    totals: dict[int, dict] = {}
-    for account in in_scope:
-        for row in balances.get(account.id, []):
-            entry = totals.setdefault(
-                row["asset_id"],
-                {
-                    "symbol": row["symbol"],
-                    "decimals": row["decimals"],
-                    "contract": row["contract_address"],
-                    "raw": 0,
-                },
-            )
-            entry["raw"] += int(row["amount_raw"])
+    rules = relevance or Relevance()
+    # Judged over the whole group, not this view of it, so one wallet's panel
+    # and its sidebar row — and the wallets and their total — agree.
+    verdicts = group_verdicts(accounts, balances, prices, rules, max_share)[group_owned]
+    holdings = aggregate_holdings(in_scope, balances)
+    counted = counted_value(holdings, prices, verdicts)
 
     priced_at: int | None = None
-    native_value: Decimal | None = None
-    token_value = Decimal(0)
-    any_token_priced = False
     native_amount_text = "0"
-    entries: list[tuple[Decimal | None, str, AssetTotal]] = []
-
-    for asset_id, entry in totals.items():
-        if entry["raw"] <= 0:
-            continue
-        is_native = entry["contract"] == NATIVE
-        amount_text = format_amount(entry["raw"], entry["decimals"], max_dp=4)
-
-        value: Decimal | None = None
-        if row := prices.get(asset_id):
-            with localcontext() as context:
-                context.prec = 40
-                value = Decimal(entry["raw"]).scaleb(-entry["decimals"]) * Decimal(row["price"])
-            priced_at = row["updated_at"] if priced_at is None else max(priced_at, row["updated_at"])
-
-        if is_native:
+    entries: list[tuple[Decimal | None, AssetTotal]] = []
+    for holding in holdings.values():
+        if quote := prices.get(holding.asset_id):
+            priced_at = max(priced_at or 0, quote["updated_at"])
+        excluded = holding.asset_id in verdicts.excluded
+        # An excluded asset's quote is the one figure the app refused to
+        # believe, and a forged ticker's quote is a pool the forger made;
+        # printing either beside the asset would hand it back.
+        untrusted = excluded or holding.asset_id in rules.impostor_asset_ids
+        value = None if untrusted else value_of(
+            holding.raw, holding.decimals, prices.get(holding.asset_id)
+        )
+        amount_text = format_amount(holding.raw, holding.decimals, max_dp=4)
+        if holding.is_native:
             native_amount_text = amount_text
-            native_value = value
-        elif value is not None:
-            token_value += value
-            any_token_priced = True
-
         entries.append(
             (
                 value,
-                entry["symbol"],
                 AssetTotal(
-                    asset_id=asset_id,
-                    symbol=entry["symbol"],
+                    asset_id=holding.asset_id,
+                    symbol=holding.symbol,
                     amount_text=amount_text,
                     value_text=format_money(value),
-                    is_native=is_native,
-                    url=_token_url(chain, entry["contract"]),
+                    is_native=holding.is_native,
+                    url=_token_url(chain, holding.contract),
+                    excluded=excluded,
+                    hidden=holding.asset_id in verdicts.hidden,
+                    raw_units=holding.decimals is None,
                 ),
             )
         )
 
-    # A worthless airdrop can carry a real DEX quote and a supply of 10^17, and
-    # one of those is enough to make a portfolio total meaningless. An asset that
-    # would be almost the whole total on its own is excluded and named, rather
-    # than silently believed or silently dropped.
-    # Relevance is decided after values are known, and never on the raw balance.
-    rules = relevance or Relevance()
-    hidden = 0
-    for value, _, asset in entries:
-        contract = totals[asset.asset_id]["contract"]
-        if not rules.is_relevant(asset.asset_id, contract, value):
-            asset.hidden = True
-            hidden += 1
-
-    contracts = {asset_id: entry["contract"] for asset_id, entry in totals.items()}
-    implausible = implausible_assets(entries, contracts, rules, max_share)
-    excluded: list[str] = []
-    for value, _, asset in entries:
-        if asset.asset_id in implausible:
-            asset.excluded = True
-            excluded.append(asset.symbol)
-            if value is not None and not asset.is_native:
-                token_value -= value
-
-    # Shown first, largest holding first; then the priced-but-unknown; hidden
-    # dust last, so revealing it never rearranges what was already on screen.
+    # Shown first, largest holding first; then the unpriced, then what the
+    # total refused to believe; hidden dust last, so revealing it never
+    # rearranges what was already on screen.
     entries.sort(
-        key=lambda item: (item[2].hidden, item[0] is None, -(item[0] or Decimal(0)), item[1])
+        key=lambda item: (
+            item[1].hidden, item[1].excluded, item[0] is None, -(item[0] or Decimal(0)),
+            item[1].symbol,
+        )
     )
-    assets = [item[2] for item in entries]
+    assets = [asset for _, asset in entries]
     visible = [asset for asset in assets if not asset.hidden]
-
-    total = None
-    if native_value is not None or any_token_priced:
-        total = (native_value or Decimal(0)) + token_value
+    credible = [asset for asset in visible if not asset.excluded]
+    hidden = len(assets) - len(visible)
+    excluded = [asset.symbol for asset in assets if asset.excluded]
+    total = counted.total
 
     if selected_id is None:
         scope = "Watching" if watched_scope else "My wallets"
@@ -754,14 +823,17 @@ def build_portfolio(
         account_count=len(in_scope),
         total_text=format_money(total),
         native_amount_text=native_amount_text,
-        native_value_text=format_money(native_value),
+        native_value_text=format_money(counted.native),
         native_symbol=chain.native_symbol,
-        token_value_text=format_money(token_value) if any_token_priced else None,
+        token_value_text=format_money(counted.tokens) if counted.any_token_priced else None,
         token_count=sum(1 for a in visible if not a.is_native),
-        assets=(visible[:max_assets] + [a for a in assets if a.hidden]),
-        hidden_assets=max(0, len(visible) - max_assets),
+        # An excluded asset sorts last but is never cut: it is named in the
+        # total's note, and the list must show what that note refers to.
+        assets=(credible[:max_assets] + [a for a in visible if a.excluded]
+                + [a for a in assets if a.hidden]),
+        hidden_assets=max(0, len(credible) - max_assets),
         priced=total is not None,
-        unpriced=sum(1 for a in visible if a.value_text is None),
+        unpriced=sum(1 for a in visible if a.value_text is None and not a.excluded),
         hidden=hidden,
         excluded=excluded,
         price_age_text=relative_time(priced_at, now=now) if priced_at else None,
@@ -820,8 +892,9 @@ def build_transaction(
     now: int | None = None,
     cost: TransactionCost | None = None,
     native_price: Decimal | None = None,
+    excluded: frozenset[int] = frozenset(),
 ) -> TransactionView:
-    transfers = [build_activity(row, chain, scope, prices) for row in rows]
+    transfers = [build_activity(row, chain, scope, prices, excluded) for row in rows]
     first = transfers[0]
 
     depth = None if not head_block else max(0, head_block - first.block_number + 1)

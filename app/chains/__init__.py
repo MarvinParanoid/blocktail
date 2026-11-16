@@ -51,6 +51,10 @@ class Chain(Protocol):
         is on, and the same twenty bytes name different things elsewhere.
         """
 
+    def token_decimals(self, contract_address: str) -> int | None:
+        """Decimals a reviewed source states for this exact token contract, or
+        ``None``. Believed over a metadata lookup, which can fail."""
+
 
 @runtime_checkable
 class ChainDataProvider(Protocol):

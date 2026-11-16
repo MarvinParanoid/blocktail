@@ -44,7 +44,9 @@ class AssetRef:
     chain_id: str
     contract_address: str
     symbol: str
-    decimals: int
+    # None when the chain would not say. Never 0 for "unknown": 0 is a real
+    # value, and it reads a raw amount as whole tokens.
+    decimals: int | None
 
     @property
     def is_native(self) -> bool:
