@@ -129,3 +129,11 @@ class SyncStatus:
     backfill_done: bool = False
     requested_from_block: int | None = None
     activity_count: int = 0
+    # A request for older history: queued | running | completed | failed.
+    history_status: str | None = None
+    history_target: int | None = None
+    history_error: str | None = None
+    # Balances are read after indexing and fail on their own.
+    balances_error: str | None = None
+    balances_failed_at: int | None = None
+    balances_ok_at: int | None = None

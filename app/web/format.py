@@ -422,6 +422,9 @@ class StatusView:
     detail: str
     activity_count: int
     backfilling: bool
+    # Indexing can be fine while balances are not; said apart, in amber, and
+    # never in place of the indexing state.
+    balance_detail: str = ""
 
 
 def build_status(
@@ -448,6 +451,11 @@ def build_status(
     else:
         state, detail = "ok", ""
 
+    balance_detail = ""
+    if status.balances_error:
+        when = relative_time(status.balances_failed_at, now=now)
+        balance_detail = f"balances not refreshed ({when}); showing the last known"
+
     return StatusView(
         chain_name=chain.display_name,
         chain_id=chain.chain_id,
@@ -458,6 +466,7 @@ def build_status(
         detail=detail,
         activity_count=status.activity_count,
         backfilling=not status.backfill_done,
+        balance_detail=balance_detail,
     )
 
 

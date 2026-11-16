@@ -131,18 +131,8 @@
 {% if not next_cursor and history_floor %}
   {# The feed ends where the backfill window was set, not where the history
      does. Saying so, and offering to go further, beats an unexplained stop. #}
-  <tr class="row row--older">
-    <td colspan="7">
-      <form method="post" action="/history/older"
-            hx-post="/history/older" hx-target="closest tr" hx-swap="outerHTML"
-            hx-indicator="closest tr" hx-include="#filters">
-        <input type="hidden" name="before" value="{{ oldest_cursor or '' }}">
-        <input type="hidden" name="after_day" value="{{ ns.day or '' }}">
-        <button type="submit" class="linkish">Load {{ older_days }} more days</button>
-        <span class="row--older__hint">indexed back to block #{{ '{:,}'.format(history_floor) }}</span>
-      </form>
-    </td>
-  </tr>
+  {% set cursor = oldest_cursor or '' %}{% set day = ns.day or '' %}
+  {% include "_history_row.html" %}
 {% endif %}
 
 {% if next_cursor %}

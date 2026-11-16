@@ -260,12 +260,17 @@ def test_balances_are_refreshed_and_replaced(app_ctx, provider, sample_transfers
 
 
 def test_balance_failure_is_surfaced(app_ctx, provider, sample_transfers):
+    """Surfaced on its own: the transfers were indexed, so the cycle is not a
+    failure — but the balances are said to be stale."""
     provider.transfers = sample_transfers
     provider.fail_balances_with = ProviderDown("balance endpoint down")
     result = run(app_ctx.indexer.run_once())
 
-    assert not result.ok
-    assert "balance" in app_ctx.db.get_sync_status("ethereum").last_error
+    assert result.ok
+    assert "balance endpoint down" in result.balance_error
+    status = app_ctx.db.get_sync_status("ethereum")
+    assert status.last_error is None
+    assert "balance endpoint down" in status.balances_error
 
 
 def test_backfill_window_then_incremental(app_ctx, provider, sample_transfers, settings):

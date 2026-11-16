@@ -279,15 +279,20 @@ mirror image from the other side — without any of them being special-cased.
 
 ### Reorgs
 
-Each cycle re-reads the last `REORG_DEPTH` blocks (default 64, ~13 minutes).
-Within that window the fresh scan is authoritative for every monitored wallet,
-so any stored event the chain no longer reports is deleted. Below the window
-nothing is ever pruned — a provider that stops serving old history must not be
-able to erase settled records.
+Each cycle re-reads from `REORG_DEPTH` blocks (default 64, ~13 minutes) below
+the last successfully synced block up to the head. Within that range the
+fresh scan is authoritative for every monitored wallet, so any stored event the
+chain no longer reports is deleted. After a downtime the range simply reaches
+further — everything since the last success was re-read, so a reorg that
+happened while nobody was looking is caught. It never reaches further than
+that: a wallet catching up on older history is reading settled blocks, and a
+provider that stops serving old history must not be able to erase settled
+records. When one wallet started later than the rest (new, after a downtime
+longer than the backfill window), only the part every wallet covered counts.
 
-Pruning runs **only after a fully successful cycle**. If any wallet's fetch
-fails, the cycle records the error, leaves the watermark where it was, and
-deletes nothing.
+Pruning runs **only after the transfers of every wallet were fetched.** If any
+wallet's fetch fails, the others are cancelled, the cycle records the error,
+leaves the watermark where it was, and deletes nothing.
 
 The scan covers active wallets only, so only events with an active end are
 candidates. An event of a removed wallet is not in the scan because nobody
@@ -328,7 +333,16 @@ spent, and rate limits are what a free plan actually runs out of. A quiet cycle
 now makes no balance call at all.
 
 The argument is sound but not airtight, so a full sweep every
-`BALANCE_REFRESH_SECONDS` remains the safety net. This is also why the provider
+`BALANCE_REFRESH_SECONDS` remains the safety net.
+
+Balances are read **after** the transfers are stored and the watermark has
+moved, and they fail on their own. A wallet whose read fails keeps its last
+known balances — never zeros — and is read again next cycle whether it moved or
+not; the other wallets are stored as usual. The failure is recorded apart from
+indexing (`balances_error` in `sync_state`, `balances` in `/api/status`) and
+shown in amber beside a status that stays green: the index is current, the
+balances are not. Before, one balance error failed the whole cycle and sent
+the next one back over the same blocks. This is also why the provider
 retries treat HTTP 403 as throttling rather than as a permissions problem: it
 is what Alchemy answers a burst with, and reading it literally sends you looking
 for a key that is fine.
@@ -341,6 +355,34 @@ carry a floor as well as a ceiling — `indexed_from_block` alongside
 `synced_to_block` — so the feed can be asked to go further back than it has,
 and the end of the feed says where indexing stops rather than stopping without
 explanation.
+
+"Load N more days" is a request, not a fetch. The page records it and wakes
+the indexer, and gets an answer at once; the background indexer does the work
+in its next cycle, which it starts straight away. The end of the feed shows the
+request as queued, then running, and polls until it is completed — at which
+point the rows it uncovered take its place — or failed, with the reason. The
+rule for repeated requests lives in one place (`Database.request_history`):
+while one is queued or running, asking again changes nothing, so ten clicks
+are one request; after a failure, asking again retries the same block; only
+after it completed does a request reach one window deeper. There is no limit
+on how deep.
+
+The block asked for is stored as `requested_from_block`, a floor every cycle
+honours from then on, and the request's state is stored beside it. A request
+that was running when the process stopped is queued again at startup. Closing
+the page changes nothing.
+
+### One cycle at a time
+
+A cycle is single-flight. `Indexer.run_once()` starts one, or joins the one
+already running and returns its result — never a second cycle beside it, and
+never a queue of them. Only the scheduler loop starts cycles; the web layer
+asks for one with `wake()`, an event that any number of requests set once, so
+a burst of them costs one extra cycle at most. Nothing is held while the loop
+waits for its interval or a wake. A cycle that raises leaves nothing locked:
+the next call starts a fresh one. On shutdown the loop and the cycle in flight
+are cancelled, and the app waits for the cycle to unwind before closing the
+provider and the database.
 
 ---
 

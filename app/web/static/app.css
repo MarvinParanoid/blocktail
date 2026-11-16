@@ -116,6 +116,7 @@ a.sym:hover { color: var(--accent); }
 .status--stale .status__line, .status--stale .status__detail { color: var(--warn); }
 .status--error .status__line, .status--error .status__detail { color: var(--error); }
 .status--starting .status__detail { color: var(--own); }
+.status__detail--balances { color: var(--warn); }
 .status__detail {
   padding-left: 8px;
   border-left: 1px solid var(--border-hi);
@@ -928,6 +929,8 @@ select:focus, input:focus { outline: 1px solid var(--accent); outline-offset: -1
 .row--older td { padding: 18px 14px; text-align: center; border-bottom: 0; }
 .row--older form { display: inline-flex; align-items: baseline; gap: 10px; margin: 0; }
 .row--older__hint { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+.row--older__state { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: 10px; }
+.row--older__error { color: var(--warn); font-size: 12px; margin-right: 10px; }
 .row--older.htmx-request .linkish { color: var(--dim); }
 .row--older.htmx-request .row--older__hint::after {
   content: " · fetching…";
@@ -1204,7 +1207,7 @@ html.inspector-open .cell-party { width: 42%; }
   .topline .summary { display: none; }
   .status__line { display: none; }
   .status--error .status__detail, .status--stale .status__detail,
-  .status--starting .status__detail { display: block; }
+  .status--starting .status__detail, .status__detail--balances { display: block; }
   .status::after {
     content: attr(data-age);
     font-family: var(--mono);
