@@ -15,6 +15,12 @@
 #   docker-compose.override.yml  written here: pins the image tag that runs
 #   last-good                    "<tag> <image id>" of the last version that
 #                                passed its health check; written on success only
+#   states/<version>/            how that version ran: its docker-compose.yml,
+#                                its override if it had one, "<tag> <image id>",
+#                                SHA256SUMS, and "complete", written last. What
+#                                a rollback puts back — never the image alone
+#   attempts/<time>-<what>/      the files a rollback replaced, and the failed
+#                                container's state and log, kept for diagnosis
 #   releases/<sha>/              what was shipped; the last five are kept
 #   backups/                     SQLite backups; five, plus the newest one taken
 #                                from the last good version
@@ -161,6 +167,184 @@ log_line() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$REMOTE/deployments.log"
 }
 
+# ------------------------------------------------------------ the way back
+#
+# An image is not a version: blocktail:0.1.0 under the compose file that
+# replaced its own does not start on a host whose Docker refuses that file's
+# settings (RC2b.1). So a version is kept as the pair it ran as — the image
+# and the compose files — in states/<version>/, and a rollback restores the
+# pair. A state is written before anything moves (for what is good now) and
+# after a health check passes (for the new version); never by a failed one.
+
+STATES="$REMOTE/states"
+state_dir() { printf '%s/%s' "$STATES" "$(version_of "$1")"; }
+
+# save_state <tag> <image id>: the compose files in $REMOTE now, as that version's.
+save_state() {
+  local tag="$1" id="$2" dir tmp files
+  dir="$(state_dir "$tag")"
+  tmp="$STATES/.new-$(version_of "$tag")-$$"
+  mkdir -p "$STATES" && rm -rf -- "$tmp" && mkdir "$tmp" || return 1
+  cp -p "$REMOTE/docker-compose.yml" "$tmp/docker-compose.yml" || return 1
+  files="docker-compose.yml image"
+  if [ -f "$REMOTE/docker-compose.override.yml" ]; then
+    cp -p "$REMOTE/docker-compose.override.yml" "$tmp/docker-compose.override.yml" || return 1
+    files="$files docker-compose.override.yml"
+  fi
+  printf '%s %s\n' "$tag" "$id" > "$tmp/image" || return 1
+  # shellcheck disable=SC2086  # the names are fixed, without spaces
+  (cd "$tmp" && sha256sum $files > SHA256SUMS) || return 1
+  printf 'complete\n' > "$tmp/complete" || return 1
+  # Swapped in whole: a reader sees the old state or the new one, never half.
+  if [ -e "$dir" ]; then
+    rm -rf -- "$dir.replaced" && mv -- "$dir" "$dir.replaced" || return 1
+  fi
+  mv -- "$tmp" "$dir" || return 1
+  rm -rf -- "$dir.replaced"
+}
+
+# check_state <tag>: a state is a rollback target only if it is complete,
+# intact, names this tag, and the tag still points at the image it names.
+# Sets STATE_PROBLEM when it is not.
+STATE_PROBLEM=""
+check_state() {
+  local tag="$1" dir recorded_tag recorded_id listed
+  dir="$(state_dir "$tag")"
+  STATE_PROBLEM=""
+  [ -d "$dir" ] || { STATE_PROBLEM="there is no saved state for $tag ($dir)"; return 1; }
+  [ -f "$dir/complete" ] || { STATE_PROBLEM="the state in $dir is incomplete (no 'complete' marker)"; return 1; }
+  [ -f "$dir/SHA256SUMS" ] && [ -f "$dir/docker-compose.yml" ] && [ -f "$dir/image" ] \
+    || { STATE_PROBLEM="the state in $dir is missing files"; return 1; }
+  listed="$(awk '{print $2}' "$dir/SHA256SUMS" | sort | tr '\n' ' ')"
+  if [ -f "$dir/docker-compose.override.yml" ]; then
+    [ "$listed" = "docker-compose.override.yml docker-compose.yml image " ] \
+      || { STATE_PROBLEM="the state in $dir lists other files than it holds"; return 1; }
+  else
+    [ "$listed" = "docker-compose.yml image " ] \
+      || { STATE_PROBLEM="the state in $dir lists other files than it holds"; return 1; }
+  fi
+  (cd "$dir" && sha256sum --quiet --strict -c SHA256SUMS >/dev/null 2>&1) \
+    || { STATE_PROBLEM="the state in $dir does not match its checksums (changed or damaged)"; return 1; }
+  read -r recorded_tag recorded_id < "$dir/image"
+  [ "$recorded_tag" = "$tag" ] \
+    || { STATE_PROBLEM="the state in $dir is for $recorded_tag, not $tag"; return 1; }
+  [ "$(image_id "$tag" || true)" = "$recorded_id" ] \
+    || { STATE_PROBLEM="$tag no longer points at $recorded_id, the image that state ran"; return 1; }
+}
+
+# The last good version must have a state before anything moves. Kept if it
+# has a valid one; taken from what runs now if that is the last good image;
+# otherwise there is no reliable way back, and the deploy does not start.
+secure_the_way_back() {  # <last good tag>
+  local good="$1" running_id
+  [ -n "$good" ] || return 0
+  if check_state "$good"; then
+    say "the way back: $good, as saved in $(state_dir "$good")"
+    return 0
+  fi
+  running_id="$("$DOCKER" inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null || true)"
+  if [ "$running_id" != "$(last_good_id)" ]; then
+    die "$STATE_PROBLEM, and what runs now is not $good, so its compose files cannot" \
+        "be saved in its place; there would be no reliable way back. Nothing was changed."
+  fi
+  save_state "$good" "$running_id" \
+    || die "could not save the state of $good in $(state_dir "$good"); without it there is" \
+           "no way back, so nothing was changed"
+  check_state "$good" || die "the state just saved for $good does not verify: $STATE_PROBLEM; nothing was changed"
+  say "the way back: $good, saved now from what runs (docker-compose.yml$( \
+      [ -f "$REMOTE/docker-compose.override.yml" ] && printf ' and its override'))"
+}
+
+# Before a rollback replaces the compose files, keep them and the failed
+# container's state and log for diagnosis. Nothing here is deleted later by
+# this script.
+keep_attempt() {  # <what>: prints the directory; fails if the files could not be kept
+  local dir
+  dir="$REMOTE/attempts/$(date -u +%Y%m%dT%H%M%SZ)-$1"
+  mkdir -p "$dir" || return 1
+  if [ -f "$REMOTE/docker-compose.yml" ]; then
+    cp -p "$REMOTE/docker-compose.yml" "$dir/" || return 1
+  fi
+  if [ -f "$REMOTE/docker-compose.override.yml" ]; then
+    cp -p "$REMOTE/docker-compose.override.yml" "$dir/" || return 1
+  fi
+  # The container may be gone or never have started: then these say so.
+  "$DOCKER" inspect -f '{{.Config.Image}} {{.Image}} {{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}}' \
+    "$CONTAINER" > "$dir/container.txt" 2>&1 || echo "(no container to inspect)" >> "$dir/container.txt"
+  "$DOCKER" logs --tail 200 "$CONTAINER" > "$dir/container.log" 2>&1 || echo "(no log)" >> "$dir/container.log"
+  printf '%s' "$dir"
+}
+
+install_state_files() {  # <state dir>: its compose files become $REMOTE's
+  local dir="$1"
+  cp -p "$dir/docker-compose.yml" "$REMOTE/docker-compose.yml.restore" \
+    && mv "$REMOTE/docker-compose.yml.restore" "$REMOTE/docker-compose.yml" || return 1
+  if [ -f "$dir/docker-compose.override.yml" ]; then
+    cp -p "$dir/docker-compose.override.yml" "$REMOTE/docker-compose.override.yml.restore" \
+      && mv "$REMOTE/docker-compose.override.yml.restore" "$REMOTE/docker-compose.override.yml" \
+      || return 1
+  else
+    rm -f "$REMOTE/docker-compose.override.yml" || return 1
+  fi
+}
+
+same_files_as_state() {  # <state dir>: does $REMOTE run from exactly these files?
+  local dir="$1"
+  cmp -s "$dir/docker-compose.yml" "$REMOTE/docker-compose.yml" || return 1
+  if [ -f "$dir/docker-compose.override.yml" ]; then
+    cmp -s "$dir/docker-compose.override.yml" "$REMOTE/docker-compose.override.yml"
+  else
+    [ ! -e "$REMOTE/docker-compose.override.yml" ]
+  fi
+}
+
+# ------------------------------------------------- runtime preflight
+#
+# CI runs the image on a stock Docker. The server's may refuse what the
+# compose file asks (snap Docker's AppArmor and no-new-privileges, RC2b.1).
+# So before anything stops, the new image runs once here, under every
+# restriction the new compose file sets — the image's own user, read-only
+# root, tmpfs, capabilities, security options, memory and pids — and must
+# exec a shell and import the app, as the real start does. No network, no
+# volume, no .env, no wallets.yml: nothing of production is in it.
+
+compose_restrictions() {  # <compose file>: docker run flags, one per line
+  "$DOCKER" compose --project-directory "$REMOTE" -p "$PROJECT" -f "$1" config --format json \
+    2>/dev/null | python3 -c '
+import json, sys
+s = json.load(sys.stdin)["services"]["blocktail"]
+out = []
+if s.get("read_only"): out.append("--read-only")
+tmpfs = s.get("tmpfs") or []
+for t in ([tmpfs] if isinstance(tmpfs, str) else tmpfs): out += ["--tmpfs", t]
+for c in s.get("cap_drop") or []: out += ["--cap-drop", c]
+for c in s.get("cap_add") or []: out += ["--cap-add", c]
+for o in s.get("security_opt") or []: out += ["--security-opt", o]
+if s.get("mem_limit"): out += ["--memory", str(s["mem_limit"])]
+if s.get("pids_limit"): out += ["--pids-limit", str(s["pids_limit"])]
+if s.get("user"): out += ["--user", str(s["user"])]
+if s.get("privileged"): out.append("--privileged")
+print("\n".join(out))'
+}
+
+runtime_preflight() {  # <image tag> <compose file>
+  local flags out
+  local -a args=()
+  command -v python3 >/dev/null 2>&1 || die "python3 is needed on the server for the runtime check; nothing was changed"
+  flags="$(compose_restrictions "$2")" \
+    || die "could not read the restrictions from $2 (docker compose config); nothing was changed"
+  [ -z "$flags" ] || mapfile -t args <<< "$flags"
+  say "runtime check: $1 under ${args[*]:-no restrictions}"
+  if ! out="$("$DOCKER" run --rm --network none --name "blocktail-preflight-$$" "${args[@]}" \
+        --entrypoint sh "$1" -c 'exec python -c "import app.main; print(\"preflight: ok\")"' 2>&1)" \
+     || ! grep -q '^preflight: ok$' <<<"$out"; then
+    printf '%s\n' "$out" | sed 's/^/    /' >&2
+    die "$1 does not start under its compose restrictions on this host's Docker (above);" \
+        "the running version is untouched. See docs/production.md, \"Runtime check\"."
+  fi
+  say "runtime check: ok"
+}
+
 # Liveness of the container we just started, from the image we expect.
 # HTTP 200 here means the web process is up — not that the provider is
 # reachable or the index current; /healthz keeps that distinction on purpose.
@@ -204,7 +388,8 @@ EOF
 deploy: Nothing was rolled back automatically. The database may already carry
 deploy: migrations from $tag. To go back:
 deploy:
-deploy:   1. Start the last good version (the database is left as it is):
+deploy:   1. Return to the last good version — its image and the compose files it
+deploy:      ran with, from $(state_dir "$good") (the database is left as it is):
 deploy:        BLOCKTAIL_REMOTE='$REMOTE' bash '$REMOTE/releases/$SHA/scripts/remote-deploy.sh' rollback $good
 deploy:   2. If that version cannot read the database, restore the newest backup
 deploy:      taken while it was running ($backup) — see docs/operations.md,
@@ -314,6 +499,11 @@ deploy() {
   fi
   say "running: $running; last good: ${good:-none}"
 
+  # Before anything is built, stopped or replaced: the way back to the last
+  # good version — its image and the compose files it ran with — is saved
+  # and verified, or nothing happens.
+  secure_the_way_back "$good"
+
   if new_id="$(image_id "$tag")"; then
     say "$tag is already built; not rebuilding — a commit's image is immutable here"
   else
@@ -322,6 +512,10 @@ deploy() {
       || die "image build failed; the running version is untouched"
     new_id="$(image_id "$tag")"
   fi
+
+  # The new image, under the new compose file's restrictions, on this host's
+  # Docker — while the running version still runs.
+  runtime_preflight "$tag" "$RELEASE/docker-compose.yml"
 
   # Named after what is running, and the newest one taken from the last good
   # version is never rotated out: retries of a failed deploy back up the
@@ -337,9 +531,18 @@ deploy() {
   cp "$RELEASE/docker-compose.yml" "$REMOTE/docker-compose.yml"
   pin_image "$tag"
   say "starting $tag"
-  compose up -d --no-build --force-recreate >&2 || true
+  # compose's own status is not the verdict: the health check below is.
+  compose up -d --no-build --force-recreate >&2 \
+    || say "docker compose up reported an error; the health check decides"
 
   if wait_healthy "$new_id"; then
+    # The new version's own state, then the record: a version is recorded as
+    # good only with a way back to it.
+    if ! save_state "$tag" "$new_id" || ! check_state "$tag"; then
+      log_line "$SHA healthy but its state could not be saved image=$tag last_good=${good:-none}"
+      die "$tag is running and healthy, but its state could not be saved in" \
+          "$(state_dir "$tag"), so it is not recorded as good; last good is still ${good:-none}"
+    fi
     record_good "$tag" "$new_id"
     log_line "$SHA ok image=$tag id=$new_id previous_good=${good:-none} backup=$BACKUP_NAME"
     prune_releases
@@ -362,7 +565,7 @@ deploy() {
 
 rollback() {  # [<image tag>]
   acquire_lock "rollback ${1:-to the last good version}"
-  local tag id recorded
+  local tag id recorded dir kept running_id
   tag="${1:-$(last_good_tag)}"
   [ -n "$tag" ] || die "no version is recorded as good on this host; name an image tag"
   id="$(image_id "$tag")" || die "no image $tag on this host (docker image ls $IMAGE_REPO)"
@@ -373,19 +576,46 @@ rollback() {  # [<image tag>]
     die "$tag now points at $id, not at $recorded which passed its health check" \
         "(rebuilt or retagged by hand); name the image you mean explicitly"
   fi
+  # A version is its image and the compose files it ran with; without a
+  # verified record of both there is nothing safe to go back to.
+  check_state "$tag" || die "$STATE_PROBLEM — $tag is not a rollback target. Nothing was changed."
+  dir="$(state_dir "$tag")"
   PROJECT="$(project_name)"
-  say "rolling back to $tag ($id); the database is NOT restored"
-  pin_image "$tag"
-  compose up -d --no-build --force-recreate >&2 || true
-  if wait_healthy "$id"; then
+
+  # Asked twice, the second time changes nothing.
+  running_id="$("$DOCKER" inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null || true)"
+  if [ "$running_id" = "$id" ] && same_files_as_state "$dir" && wait_healthy "$id"; then
     record_good "$tag" "$id"
-    log_line "rollback ok image=$tag id=$id"
-    say "ok: $tag is running. If it cannot read the database, see docs/operations.md."
+    log_line "rollback to $tag: already running, nothing changed"
+    say "ok: $tag already runs from its saved compose files and is healthy; nothing was changed"
     return 0
   fi
-  log_line "rollback failed image=$tag"
-  say "rollback to $tag did not become healthy"
+
+  kept="$(keep_attempt "before-rollback-to-$(version_of "$tag")")" \
+    || die "could not keep the current compose files before replacing them; nothing was changed"
+  say "kept what ran until now in $kept"
+  say "rolling back to $tag ($id) with the compose files it ran with; the database is NOT restored"
+  install_state_files "$dir" \
+    || die "could not put $tag's compose files back from $dir; the files that ran until now are in $kept"
+  compose up -d --no-build --force-recreate >&2 \
+    || say "docker compose up reported an error; the health check decides"
+  if wait_healthy "$id"; then
+    record_good "$tag" "$id"
+    log_line "rollback ok image=$tag id=$id kept=$kept"
+    say "ok: $tag is running with its own compose files. The database was not touched;"
+    say "if this version cannot read it, see docs/operations.md, \"Restoring the database\"."
+    return 0
+  fi
+  log_line "rollback failed image=$tag kept=$kept"
+  say "rollback to $tag did not become healthy within ${HEALTH_TIMEOUT}s"
   show_logs
+  cat >&2 <<EOF
+
+deploy: The compose files of $tag are in place (from $dir) and its image is
+deploy: what they name; the record of what is good was not changed. What ran
+deploy: before is kept in $kept. The database was not touched. Stop here:
+deploy: read the log above and docs/operations.md, "When a rollback fails".
+EOF
   exit 1
 }
 

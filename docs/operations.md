@@ -35,10 +35,19 @@ ssh: remote-deploy.sh deploy <sha> ────────► take the deploy l
                                               (held → refuse, remove own
                                                unpacked tree, change nothing)
                                             move the tree to releases/<sha>/
-                                            refuse: .env or wallets.yml missing
+                                            refuse: .env or wallets.yml missing,
+                                              or ALLOWED_HOSTS not set
+                                            the way back: the last good version's
+                                              image + compose files saved and
+                                              verified in states/<version>/
+                                              (cannot → stop, nothing changed)
                                             blocktail:<sha> already built? reuse it
                                               else docker build -t blocktail:<sha>
                                               (build fails → stop, nothing changed)
+                                            runtime check: the new image, run once
+                                              under the new compose file's
+                                              restrictions on this Docker
+                                              (fails → stop, nothing changed)
                                             SQLite online backup → backups/
                                               integrity_check, keep last 5 + the
                                               newest taken from the last good one
@@ -48,11 +57,14 @@ ssh: remote-deploy.sh deploy <sha> ────────► take the deploy l
                                             docker compose up -d --no-build
                                             wait ≤ 90 s: container runs the new
                                               image id and /healthz answers 200
-                                              ok   → record as last good, log,
-                                                     keep last 5 releases
-                                              fail → logs + rollback to the last
-                                                     good SHA, exit 1, nothing
-                                                     undone, record untouched
+                                              ok   → save its state, record as
+                                                     last good, log, keep last
+                                                     5 releases
+                                              fail → logs, and the command that
+                                                     rolls back; exit 1. NOTHING
+                                                     is rolled back automatically:
+                                                     the new version is left as it
+                                                     is, the record untouched
 ```
 
 There is no switch to skip a check. A deploy ships `git archive HEAD` and
@@ -96,6 +108,13 @@ $REMOTE/
   docker-compose.override.yml  pins the running image: blocktail:<sha>
   last-good                    "<tag> <image id>" of the last version that
                                passed its health check
+  states/<version>/            how a good version ran: docker-compose.yml,
+                               its override if any, "<tag> <image id>",
+                               SHA256SUMS, and "complete" (written last).
+                               What a rollback restores
+  attempts/<time>-<what>/      what a rollback replaced: the compose files,
+                               the container's state and its last 200 log
+                               lines. Never deleted by the scripts
   releases/<sha>/              the last five releases shipped
   backups/                     SQLite backups (see below)
   deployments.log              one line per attempt, with image and backup
@@ -126,8 +145,8 @@ built again: retrying a commit reuses its image, and a tag means the same image
 for as long as it exists. Images are never deleted by the scripts.
 
 `$REMOTE/last-good` holds the tag and image id of the last version that
-passed its health check — written after a successful deploy or rollback, and
-never by a failure. However many attempts at a new version fail in a row, the
+passed its health check — written after a successful deploy (once its state is
+saved) or a successful rollback, and never by a failure. However many attempts at a new version fail in a row, the
 rollback target stays the version that last worked, and the failure message
 names it by its SHA tag. The backup taken while that version was running is
 kept out of rotation for the same reason.
@@ -157,7 +176,14 @@ A server set up by the earlier `deploy.sh` has the code unpacked directly in
 `$REMOTE` and no `last-good` record. The first run of this one detects the
 running container's compose project, tags the image it runs
 `blocktail:baseline-<image id>` and records that as the last good version,
-backs up its database, and takes over from there. The old code files left in `$REMOTE` are no longer used; they
+saves that image together with the compose file it runs from as the
+baseline's state, backs up its database, and takes over from there.
+
+A server with a `last-good` but no `states/` — as the failed first attempt of
+RC2b.1 left production — is handled the same way: if what runs is the last
+good image, its compose files are saved as its state before anything else
+happens; if it is not, the deploy refuses, because there is nothing it could
+reliably go back to. The old code files left in `$REMOTE` are no longer used; they
 can be removed once a deploy has succeeded, keeping `.env`, `wallets.yml`,
 `docker-compose*.yml`, `releases/`, `backups/` and `deployments.log`.
 
@@ -261,18 +287,65 @@ Remove the `before-restore` file once you are sure you will not need it.
 
 ```bash
 cat "$REMOTE/last-good"                      # blocktail:<sha> sha256:…
+ls "$REMOTE/states"                          # the versions there is a way back to
 SCRIPT="$(ls -1dt "$REMOTE"/releases/*/ | head -n 1)scripts/remote-deploy.sh"
 
 BLOCKTAIL_REMOTE="$REMOTE" bash "$SCRIPT" rollback                    # the last good version
 BLOCKTAIL_REMOTE="$REMOTE" bash "$SCRIPT" rollback blocktail:<sha>    # or one you name
 ```
 
-Any release's copy of the script can roll back to any image on the host
-(`docker image ls blocktail`). Rollback takes the deploy lock, pins the image,
-starts it and waits for `/healthz`; if it comes up healthy it becomes the
-last good version. It refuses when the last good tag no longer points at the
-image id recorded for it — rebuilt or retagged by hand — and asks you to name
-the image instead. **It does not touch the database.**
+**A version is its image and the compose files it ran with**, not the image
+alone: the first production deploy (RC2b.1) showed an old image that does not
+start under a new compose file. So a rollback, under the deploy lock:
+
+1. refuses a target without a valid state in `states/<version>/` — none,
+   incomplete (no `complete` marker), a file changed or missing against
+   `SHA256SUMS`, or a tag that no longer points at the image recorded there —
+   and changes nothing;
+2. if that version already runs from exactly those files and is healthy, says
+   so and changes nothing (asking twice is safe);
+3. copies the compose files in place now, the container's state and its log
+   into `attempts/<time>-before-rollback-to-<version>/` — if it cannot, it
+   stops before replacing anything;
+4. puts the saved `docker-compose.yml` back, and the saved override — or
+   removes the override when that version had none (a legacy baseline);
+5. starts it and waits for `/healthz`; only then records it as last good.
+
+**It does not touch the database** — no backup is restored and no migration
+is undone. Any release's copy of the script can do it.
+
+### When a rollback fails
+
+The script stops with the container's log and says where things are: the
+target's compose files are in place, what ran before is in `attempts/…`, the
+record of what is good was not changed, and the database was not touched.
+Do not run a deploy now. In this order:
+
+1. `docker compose ps` and `docker compose logs --tail 200` in `$REMOTE`:
+   why does the old version not start? An `exec … operation not permitted` is
+   the host's Docker refusing the compose settings (production.md, "Docker
+   from snap"); a database error is the old code on the new schema.
+2. The old code on the new schema: restore the newest `…-from-<its version>.db`
+   backup (below, "Restoring the database") and `docker compose up -d`.
+3. Anything else: the files in `attempts/…` and `states/…` and
+   `deployments.log` are the record; nothing has been deleted. Decide before
+   changing anything by hand.
+
+### After a deploy that stopped half-way
+
+What is on the server depends on where it stopped, and the message says which:
+
+* before the switch — the way back could not be saved, the build failed, the
+  runtime check refused, or the backup failed: the old version still runs
+  with its own files; nothing to undo. Fix the cause, deploy again.
+* after the switch, health check failed: the new compose files and its pin
+  are in place and the new container is running or restarting; `last-good`
+  and its state still describe the old version. Roll back (above); then fix
+  the cause and deploy again — the rollback is not needed first if the fix is
+  ready, since the way back stays saved either way.
+* healthy, but its state could not be saved: it runs, and is not recorded as
+  good; the previous version remains the way back. Free the space or fix the
+  permission, then deploy the same commit again (its image is reused).
 
 ### Rollback after a migration
 
@@ -293,8 +366,9 @@ release production runs (the `rollback` job): `tests/test_rollback.py` runs
 main's code on a synthetic database this change has migrated — every read
 compared with the same read before the migration, and wallets added, renamed
 and removed — and `scripts/rollback-smoke.sh` makes a legacy server out of
-main's image and compose, deploys this change onto it with this script, rolls
-back to the baseline under the new compose, and deploys again. The second
+main's image and compose, deploys this change onto it with this script — and a
+release that the host cannot start, and one that fails its health check —
+rolls back to the baseline with its own compose, and deploys again. The second
 point is not checked: it shows only on a forward deploy after a rollback in
 which the older code met a token whose lookup failed.
 
@@ -314,8 +388,8 @@ So after a failed deploy that included a migration:
 
 ## When a new version does not start
 
-The deploy stops with the last 80 log lines and the rollback commands. Nothing
-has been undone at that point.
+The deploy stops with the last 80 log lines and the rollback command. Nothing
+has been undone at that point, and nothing will be unless you run it.
 
 1. Read the log lines. A configuration error (`ALCHEMY_API_KEY is not set`, an
    invalid `wallets.yml`) is fixed in `$REMOTE` and needs no rollback:

@@ -373,6 +373,12 @@ if args[0] == "build":
 if args[0] == "tag":
     src, dst = args[1], args[2]
     s["images"][dst] = s["images"].get(src, src); save(s); sys.exit(0)
+if args[0] == "run" and "--network" in args and args[args.index("--network") + 1] == "none":
+    # The runtime check: the image under the compose file's restrictions.
+    s["preflights"] = s.get("preflights", []) + [" ".join(args)]; save(s)
+    if os.environ.get("FAKE_PREFLIGHT") == "fail":
+        print("exec /usr/bin/sh: operation not permitted", file=sys.stderr); sys.exit(1)
+    print("preflight: ok"); sys.exit(0)
 if args[0] == "run":
     if "id" in args:
         print(os.getuid() if args[-1] == "-u" else os.getgid()); sys.exit(0)
@@ -391,9 +397,20 @@ if args[0] == "run":
     fcntl.flock(guard, fcntl.LOCK_UN)
     sys.exit(subprocess.call([sys.executable] + [host_path(a) for a in rest]))
 if args[0] == "compose":
+    if "config" in args:
+        import yaml
+        f = args[args.index("-f") + 1]
+        svc = yaml.safe_load(open(f))["services"]["blocktail"]
+        keys = ("read_only", "tmpfs", "cap_drop", "cap_add", "security_opt", "mem_limit",
+                "pids_limit", "user", "privileged")
+        print(json.dumps({"services": {"blocktail": {k: svc[k] for k in keys if k in svc}}}))
+        sys.exit(0)
     if "up" in args:
-        override = open("docker-compose.override.yml").read()
-        tag = override.split("image:")[1].split()[0]
+        # The override pins the image when there is one; a legacy compose file
+        # names it itself.
+        source = ("docker-compose.override.yml" if os.path.exists("docker-compose.override.yml")
+                  else "docker-compose.yml")
+        tag = open(source).read().split("image:")[1].split()[0]
         s["container"] = {"image_id": s["images"][tag], "config_image": tag,
                           "status": "running", "project": args[args.index("-p") + 1]}
         s["volume"] = True
@@ -702,9 +719,24 @@ def test_rollback_to_an_unknown_image_is_refused(stand):
     assert "no image blocktail:nope" in result.stderr
 
 
+LEGACY_COMPOSE = """services:
+  blocktail:
+    build: .
+    image: blocktail:0.1.0
+    container_name: blocktail
+    env_file: .env
+    volumes:
+      - blocktail-data:/data
+volumes:
+  blocktail-data:
+"""
+
+
 def test_the_first_scripted_deploy_adopts_what_is_running_as_good(stand):
-    """A server deployed by the old script: a container runs blocktail:0.1.0,
-    and nothing is recorded. That image becomes the baseline to return to."""
+    """A server deployed by the old script: a container runs blocktail:0.1.0
+    from the compose file it came with, and nothing is recorded. That image
+    and that file become the baseline to return to — together."""
+    (stand.remote / "docker-compose.yml").write_text(LEGACY_COMPOSE)
     stand.state.write_text(json.dumps({
         "images": {"blocktail:0.1.0": "sha256:legacy000000000"},
         "container": {"image_id": "sha256:legacy000000000", "config_image": "blocktail:0.1.0",
@@ -720,8 +752,16 @@ def test_the_first_scripted_deploy_adopts_what_is_running_as_good(stand):
     [made] = stand.backups()
     assert made.name.endswith("-from-baseline-legacy000000.db")
 
-    assert stand.remote_script("rollback").returncode == 0
+    state = stand.remote / "states" / "baseline-legacy000000"
+    assert (state / "docker-compose.yml").read_text() == LEGACY_COMPOSE
+    assert not (state / "docker-compose.override.yml").exists()
+
+    result = stand.remote_script("rollback")
+    assert result.returncode == 0, result.stderr
     assert stand.docker["container"]["image_id"] == "sha256:legacy000000000"
+    assert (stand.remote / "docker-compose.yml").read_text() == LEGACY_COMPOSE, \
+        "the old image with the compose file it ran with, not the new one"
+    assert not (stand.remote / "docker-compose.override.yml").exists()
 
 
 @pytest.mark.parametrize("env", [
@@ -868,3 +908,204 @@ def test_the_protected_backup_survives_rotation(tmp_path):
     names = sorted(p.name for p in dest.glob("blocktail-*.db"))
     assert "blocktail-20260101T000000Z-before-v2-from-v1.db" in names
     assert len(names) == 6, "five newest, plus the protected one"
+
+
+# ------------------------------- RC2b.2: a version is its image and its compose
+
+
+def legacy_server(stand: Stand) -> None:
+    """Production before any scripted deploy: blocktail:0.1.0 runs from the
+    compose file it came with; no releases/, no last-good, no states/."""
+    (stand.remote / "docker-compose.yml").write_text(LEGACY_COMPOSE)
+    stand.state.write_text(json.dumps({
+        "images": {"blocktail:0.1.0": "sha256:legacy000000000"},
+        "container": {"image_id": "sha256:legacy000000000", "config_image": "blocktail:0.1.0",
+                      "status": "running", "project": "blocktail-build"},
+        "volume": True, "calls": [],
+    }))
+    make_wal_db(stand.data / "blocktail.db").close()
+
+
+def files_now(stand: Stand) -> dict[str, str]:
+    return {p.name: p.read_text() for p in stand.remote.glob("docker-compose*.yml")}
+
+
+def test_a_successful_deploy_saves_its_own_state_and_then_records_it_good(stand):
+    v1 = deployed(stand, "v1")
+    state = stand.remote / "states" / v1
+    assert (state / "complete").exists()
+    assert (state / "image").read_text().split() == list(stand.last_good())
+    assert (state / "docker-compose.override.yml").read_text() == \
+        (stand.remote / "docker-compose.override.yml").read_text()
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+
+
+def test_a_failed_deploy_records_nothing_and_saves_no_state_for_itself(stand):
+    v1 = deployed(stand, "v1")
+    v2 = stand.commit("v2")
+    assert stand.deploy(FAKE_HEALTH="fail").returncode != 0
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+    assert not (stand.remote / "states" / v2).exists()
+    assert (stand.remote / "states" / v1 / "complete").exists(), "the way back is untouched"
+
+
+def test_rollback_restores_the_image_and_the_compose_files_it_ran_with(stand):
+    v1 = deployed(stand, "v1")
+    before = files_now(stand)
+    stand.commit("v2")
+    (stand.repo / "docker-compose.yml").write_text(
+        (stand.repo / "docker-compose.yml").read_text() + "# v2 changed the compose file\n")
+    git(stand.repo, "commit", "-qam", "v2 compose")
+    assert stand.deploy(FAKE_HEALTH="fail").returncode != 0
+    assert files_now(stand) != before
+    result = stand.remote_script("rollback")
+    assert result.returncode == 0, result.stderr
+    assert files_now(stand) == before
+    assert stand.docker["container"]["config_image"] == f"blocktail:{v1}"
+    [kept] = (stand.remote / "attempts").iterdir()
+    assert "# v2 changed the compose file" in (kept / "docker-compose.yml").read_text()
+    assert (kept / "container.log").exists(), "the failed container's log, for diagnosis"
+
+
+def test_a_second_rollback_changes_nothing(stand):
+    v1 = deployed(stand, "v1")
+    stand.commit("v2")
+    stand.deploy(FAKE_HEALTH="fail")
+    assert stand.remote_script("rollback").returncode == 0
+    ups = len([c for c in stand.docker["calls"] if " up " in f" {c} "])
+    again = stand.remote_script("rollback")
+    assert again.returncode == 0, again.stderr
+    assert "already runs" in again.stderr
+    assert len([c for c in stand.docker["calls"] if " up " in f" {c} "]) == ups, "not restarted"
+    assert len(list((stand.remote / "attempts").iterdir())) == 1
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+
+
+def test_a_state_that_cannot_be_saved_stops_the_deploy_before_anything_moves(stand):
+    legacy_server(stand)
+    (stand.remote / "states").write_text("not a directory")    # mkdir fails, even as root
+    stand.commit("v1")
+    result = stand.deploy()
+    assert result.returncode != 0
+    assert "could not save the state" in result.stderr and "nothing was changed" in result.stderr
+    assert stand.docker["container"]["config_image"] == "blocktail:0.1.0"
+    assert (stand.remote / "docker-compose.yml").read_text() == LEGACY_COMPOSE
+    assert not (stand.remote / "docker-compose.override.yml").exists()
+    assert not (stand.remote / "backups").exists(), "not even a backup: nothing moved"
+    assert not any(" build " in f" {c} " for c in stand.docker["calls"])
+
+
+@pytest.mark.parametrize("damage", ["edited", "no marker", "missing file", "retagged"])
+def test_a_damaged_state_is_not_a_rollback_target(stand, damage):
+    v1 = deployed(stand, "v1")
+    v2 = deployed(stand, "v2")
+    state = stand.remote / "states" / v1
+    if damage == "edited":
+        with open(state / "docker-compose.yml", "a") as f:
+            f.write("# changed by hand\n")
+    elif damage == "no marker":
+        (state / "complete").unlink()
+    elif damage == "missing file":
+        (state / "docker-compose.override.yml").unlink()
+    else:
+        s = stand.docker
+        s["images"][f"blocktail:{v1}"] = "sha256:rebuilt00000000"
+        stand.state.write_text(json.dumps(s))
+    before = files_now(stand)
+    result = stand.remote_script("rollback", f"blocktail:{v1}")
+    assert result.returncode != 0
+    assert "is not a rollback target. Nothing was changed." in result.stderr
+    assert files_now(stand) == before
+    assert stand.docker["container"]["config_image"] == f"blocktail:{v2}"
+    assert not (stand.remote / "attempts").exists()
+
+
+def test_a_tag_without_a_saved_state_is_not_a_rollback_target(stand):
+    deployed(stand, "v1")
+    s = stand.docker
+    s["images"]["blocktail:handmade"] = "sha256:handmade0000000"
+    stand.state.write_text(json.dumps(s))
+    result = stand.remote_script("rollback", "blocktail:handmade")
+    assert result.returncode != 0
+    assert "there is no saved state for blocktail:handmade" in result.stderr
+
+
+def test_the_runtime_check_refuses_before_the_backup_and_the_switch(stand):
+    v1 = deployed(stand, "v1")
+    before = files_now(stand)
+    backups = stand.backups()
+    stand.commit("v2")
+    result = stand.deploy(FAKE_PREFLIGHT="fail")
+    assert result.returncode != 0
+    assert "does not start under its compose restrictions" in result.stderr
+    assert "operation not permitted" in result.stderr
+    assert files_now(stand) == before and stand.backups() == backups
+    assert stand.docker["container"]["config_image"] == f"blocktail:{v1}"
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+
+
+def test_the_runtime_check_runs_the_new_image_isolated_under_the_compose_restrictions(stand):
+    v1 = deployed(stand, "v1")
+    [check] = stand.docker["preflights"]
+    assert f"blocktail:{v1}" in check
+    for flag in ("--rm", "--network none", "--read-only", "--cap-drop ALL", "--memory 512m",
+                 "--pids-limit 256", "--tmpfs /tmp:size=64m,mode=1777"):
+        assert flag in check, flag
+    for absent in ("-v ", "--volume", "--volumes-from", "--env-file", ".env", "wallets.yml"):
+        assert absent not in check, absent
+
+
+def test_after_the_failed_production_attempt_a_deploy_still_has_a_way_back(stand):
+    """The server as RC2b.1 left it: a baseline recorded as last good but no
+    states/; the release that failed, its image, its files set aside by hand
+    (*.25de5c1a751d), a backup and a log line; ALLOWED_HOSTS in .env; and the
+    legacy compose file put back. The next deploy saves the baseline's state
+    from what runs, deploys, and a rollback returns to exactly that."""
+    legacy_server(stand)
+    failed = "25de5c1a751d"
+    s = stand.docker
+    s["images"]["blocktail:baseline-legacy000000"] = "sha256:legacy000000000"
+    s["images"][f"blocktail:{failed}"] = "sha256:failed000000000"
+    stand.state.write_text(json.dumps(s))
+    (stand.remote / "last-good").write_text("blocktail:baseline-legacy000000 sha256:legacy000000000\n")
+    (stand.remote / "releases" / failed).mkdir(parents=True)
+    (stand.remote / "releases" / failed / "docker-compose.yml").write_text("services: {}\n")
+    (stand.remote / f"docker-compose.yml.{failed}").write_text("services: {}\n")
+    (stand.remote / f"docker-compose.override.yml.{failed}").write_text("services: {}\n")
+    (stand.remote / "backups").mkdir()
+    shutil.copyfile(stand.data / "blocktail.db",
+                    stand.remote / "backups" /
+                    f"blocktail-20261116T213222Z-before-{failed}-from-baseline-legacy000000.db")
+    (stand.remote / "deployments.log").write_text(f"2026-11-16T21:33:59Z {failed} failed health check\n")
+
+    v1 = deployed(stand, "v1")
+    base = stand.remote / "states" / "baseline-legacy000000"
+    assert (base / "docker-compose.yml").read_text() == LEGACY_COMPOSE
+    assert not (base / "docker-compose.override.yml").exists()
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+    assert (stand.remote / f"docker-compose.yml.{failed}").exists(), "set-aside files are left alone"
+    assert any(p.name.endswith("-from-baseline-legacy000000.db") for p in stand.backups())
+
+    result = stand.remote_script("rollback", "blocktail:baseline-legacy000000")
+    assert result.returncode == 0, result.stderr
+    assert (stand.remote / "docker-compose.yml").read_text() == LEGACY_COMPOSE
+    assert not (stand.remote / "docker-compose.override.yml").exists()
+    assert stand.docker["container"]["image_id"] == "sha256:legacy000000000"
+    assert stand.last_good()[0] == "blocktail:baseline-legacy000000"
+
+    again = deployed(stand, "v2")      # and forward again
+    assert stand.last_good()[0] == f"blocktail:{again}"
+
+
+def test_last_good_follows_health_only(stand):
+    """After a deploy: the deployed version, once healthy. After a rollback:
+    the version rolled back to, once healthy. A failed rollback changes it not."""
+    v1 = deployed(stand, "v1")
+    v2 = deployed(stand, "v2")
+    assert stand.last_good()[0] == f"blocktail:{v2}"
+    assert stand.remote_script("rollback", f"blocktail:{v1}").returncode == 0
+    assert stand.last_good()[0] == f"blocktail:{v1}"
+    failed = stand.remote_script("rollback", f"blocktail:{v2}", FAKE_HEALTH="fail")
+    assert failed.returncode != 0
+    assert "When a rollback fails" in failed.stderr
+    assert stand.last_good()[0] == f"blocktail:{v1}"
