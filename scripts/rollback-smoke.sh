@@ -7,9 +7,14 @@
 #   scripts/rollback-smoke.sh [<previous release ref>]                         A–J
 #   scripts/rollback-smoke.sh --after-failed-attempt [<previous release ref>]  the server today
 #
-# Default ref: origin/main. The previous release is built by its own
-# Dockerfile under the tag its own docker-compose.yml names — a rebuild from
-# the same commit, not production's image itself.
+# Default ref: the release production runs, as scripts/rollback-base.sh names
+# it (the newest release tag HEAD contains). It is built by its own Dockerfile
+# — a rebuild from the same commit, not production's image itself — and run
+# the way it runs on the server: a legacy compose file names its image itself
+# (blocktail:0.1.0); a later one names blocktail:${BLOCKTAIL_TAG:-local}, and
+# the image is pinned by docker-compose.override.yml, as remote-deploy.sh
+# leaves it. When that release is HEAD itself there is nothing to roll back
+# to, and it says so and stops.
 #
 # A–J, on a legacy server (that compose file, no releases/, last-good or
 # states/), with data only the database holds (a wallet added from the page):
@@ -45,7 +50,7 @@ if [ "${1:-}" = "--after-failed-attempt" ]; then
   shift
 fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BASE="${1:-origin/main}"
+BASE="${1:-$("$(dirname "$0")/rollback-base.sh")}"
 WORK="$(mktemp -d)"
 REMOTE="$WORK/blocktail-build"     # the project name, and so the volume's name
 PROJECT="blocktail-build"
@@ -149,9 +154,18 @@ hardened() {  # <what>: HEAD's compose — everything but no-new-privileges (doc
   [ "$(docker exec "$CONTAINER" sh -c "awk '/^CapEff/ {print \$2}' /proc/1/status")" = "0000000000000000" ] \
     || fail "$1: has capabilities"
 }
-legacy_files() {  # the legacy compose file in place and no override
-  cmp -s "$REMOTE/docker-compose.yml" "$WORK/previous/docker-compose.yml" \
-    && [ ! -e "$REMOTE/docker-compose.override.yml" ]
+legacy_files() {  # the previous release's compose files in place, as it ran
+  cmp -s "$REMOTE/docker-compose.yml" "$WORK/base-files/docker-compose.yml" || return 1
+  if [ -f "$WORK/base-files/docker-compose.override.yml" ]; then
+    cmp -s "$REMOTE/docker-compose.override.yml" "$WORK/base-files/docker-compose.override.yml"
+  else
+    [ ! -e "$REMOTE/docker-compose.override.yml" ]
+  fi
+}
+allowed_hosts() {  # on | off: the line in .env
+  grep -v '^ALLOWED_HOSTS=' "$REMOTE/.env" > "$REMOTE/.env.new" || true   # no match is fine
+  [ "$1" = off ] || echo "ALLOWED_HOSTS=$PUBLIC" >> "$REMOTE/.env.new"
+  chmod 600 "$REMOTE/.env.new" && mv "$REMOTE/.env.new" "$REMOTE/.env"
 }
 runs_legacy() {  # <what>
   [ "$(running_id)" = "$legacy_id" ] || fail "$1: $LEGACY is not what runs"
@@ -181,11 +195,22 @@ rollback_to_baseline() {  # <log name>
 
 # ------------------------------------------------ production as it was
 
-say "building the previous release ($BASE) by its own Dockerfile"
-mkdir -p "$WORK/previous" "$REMOTE"
-git -C "$ROOT" archive "$BASE" | tar -x -C "$WORK/previous"
-LEGACY="$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$WORK/previous/docker-compose.yml" | head -n 1)"
-[ -n "$LEGACY" ] || fail "$BASE's docker-compose.yml names no image"
+BASE_SHA="$(git -C "$ROOT" rev-parse --verify --quiet "$BASE^{commit}")" || fail "$BASE is not a commit here"
+if [ "$BASE_SHA" = "$(git -C "$ROOT" rev-parse HEAD)" ]; then
+  say "the previous release $BASE is HEAD itself: there is no rollback to check"
+  exit 0
+fi
+say "building the previous release ($BASE, ${BASE_SHA:0:12}) by its own Dockerfile"
+mkdir -p "$WORK/previous" "$REMOTE" "$WORK/base-files"
+git -C "$ROOT" archive "$BASE_SHA" | tar -x -C "$WORK/previous"
+NAMED="$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$WORK/previous/docker-compose.yml" | head -n 1)"
+case "$NAMED" in
+  "") fail "$BASE's docker-compose.yml names no image" ;;
+  *\$\{*) LEGACY="blocktail:${BASE_SHA:0:12}"; PINNED=1 ;;   # a ${…} tag: deployed by remote-deploy.sh
+  *) LEGACY="$NAMED"; PINNED="" ;;                            # deployed by hand (0.1.0)
+esac
+[ "$MODE" = "a-to-j" ] || [ -z "$PINNED" ] \
+  || fail "--after-failed-attempt models a legacy server; give it the legacy release (c9a97aa)"
 docker image inspect "$LEGACY" >/dev/null 2>&1 && fail "$LEGACY already exists here; refusing to replace it"
 docker build -q -t "$LEGACY" "$WORK/previous" >/dev/null
 MADE_IMAGES+=("$LEGACY")
@@ -203,6 +228,11 @@ mkdir -p "$WORK/scripts"
 git -C "$ROOT" archive HEAD scripts | tar -x -C "$WORK"      # the server half, as shipped
 
 cp "$WORK/previous/docker-compose.yml" "$REMOTE/"
+if [ -n "$PINNED" ]; then
+  printf '# Written by scripts/remote-deploy.sh. Pins the image that runs; do not edit.\nservices:\n  blocktail:\n    image: %s\n' \
+    "$LEGACY" > "$REMOTE/docker-compose.override.yml"
+fi
+cp "$REMOTE"/docker-compose*.yml "$WORK/base-files/"
 printf 'wallets:\n  - name: Config\n    address: "0x%s"\n' "$(printf '1%.0s' $(seq 1 40))" \
   > "$REMOTE/wallets.yml"
 cat > "$REMOTE/.env" <<EOF
@@ -216,6 +246,8 @@ HOST_PORT=$PORT
 TZ=UTC
 EOF
 chmod 600 "$REMOTE/.env"
+# A compose file from S8b on will not start without ALLOWED_HOSTS.
+if grep -q 'ALLOWED_HOSTS:?' "$WORK/previous/docker-compose.yml"; then allowed_hosts on; fi
 compose up -d --no-build >/dev/null
 wait_healthy
 add_wallet "From the page" 2
@@ -226,7 +258,7 @@ say "ok: $LEGACY runs as $legacy_uid at schema $legacy_schema, a wallet added fr
 
 if [ "$MODE" = "after-failed-attempt" ]; then
   # ------------------------------------- the server as RC2b.1 left it
-  echo "ALLOWED_HOSTS=$PUBLIC" >> "$REMOTE/.env"
+  allowed_hosts on
   baseline="blocktail:baseline-$(printf '%s' "${legacy_id#sha256:}" | cut -c1-12)"
   docker tag "$legacy_id" "$baseline"
   docker tag "blocktail:$SHA" "blocktail:$FAILED"
@@ -265,6 +297,7 @@ fi
 
 # ----------------------------------------- no ALLOWED_HOSTS, no deploy
 
+allowed_hosts off      # the running container keeps the environment it started with
 if out="$(remote_deploy deploy "$SHA" "$(ship "$SHA")" 2>&1)"; then
   fail "a deploy without ALLOWED_HOSTS went through: $out"
 fi
@@ -273,7 +306,7 @@ runs_legacy "refused without ALLOWED_HOSTS"
 [ ! -e "$REMOTE/last-good" ] && [ ! -e "$REMOTE/backups" ] && [ ! -e "$REMOTE/states" ] \
   || fail "the refused deploy left a record, a backup or a state"
 say "ok: without ALLOWED_HOSTS the deploy is refused and nothing changes"
-echo "ALLOWED_HOSTS=$PUBLIC" >> "$REMOTE/.env"
+allowed_hosts on
 
 # ------------------------------- I: the way back cannot be saved
 

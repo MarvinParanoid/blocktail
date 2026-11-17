@@ -361,16 +361,27 @@ migration:
   forward again would then trust it.
 * A changed or removed table may stop the older version from starting at all.
 
-CI checks the first and the last of these for every change against main, the
-release production runs (the `rollback` job): `tests/test_rollback.py` runs
-main's code on a synthetic database this change has migrated — every read
-compared with the same read before the migration, and wallets added, renamed
-and removed — and `scripts/rollback-smoke.sh` makes a legacy server out of
-main's image and compose, deploys this change onto it with this script — and a
-release that the host cannot start, and one that fails its health check —
-rolls back to the baseline with its own compose, and deploys again. The second
-point is not checked: it shows only on a forward deploy after a rollback in
-which the older code met a token whose lookup failed.
+CI checks the first and the last of these for every change against **the
+release production runs** — the newest release tag the change contains,
+named by `scripts/rollback-base.sh` (or `BLOCKTAIL_ROLLBACK_BASE`), whatever
+number of commits lie between. `tests/test_rollback.py` runs that release's
+code on a synthetic database this change has migrated — every read compared
+with the same read before, except what this change was asked to do (go
+further back in history), and wallets added, renamed and removed — and
+`scripts/rollback-smoke.sh` runs that release on a server laid out as it is
+deployed (its compose file, and the override pinning its image), deploys this
+change onto it with this script — and a release the host cannot start, and
+one that fails its health check — rolls back to it with its own compose, and
+deploys again. On the commit that *is* the newest release there is nothing to
+roll back across, and both say so. The transition v0.1.0 (c9a97aa) → v0.2.0
+is also checked as it happened, with both ends fixed. The second point above
+is not checked: it shows only on a forward deploy after a rollback in which
+the older code met a token whose lookup failed.
+
+**Tag a release when it is deployed** (`git tag -a v<x.y.z> <sha>` on the
+commit that runs in production, then push the tag): that tag is what every
+later change is checked against. Until it is pushed, CI keeps checking against
+the release before it.
 
 So after a failed deploy that included a migration:
 

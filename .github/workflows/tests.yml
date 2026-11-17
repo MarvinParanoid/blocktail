@@ -103,12 +103,13 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # The way back. `remote-deploy.sh rollback` starts the previous image and
-  # does not restore the database, so the previous release must run on the
-  # database this one leaves: its own code on a synthetic database this one
-  # has migrated (tests/test_rollback.py). Its image under this compose, after
-  # a real first deploy and a rollback, is in the image job. The previous
-  # release is main — on main itself, the main before this push.
+  # The way back. `remote-deploy.sh rollback` starts the previous release and
+  # does not restore the database, so that release must run on the database
+  # this one leaves: its own code on a synthetic database this one has
+  # migrated (tests/test_rollback.py); its image after a real deploy and
+  # rollback is in the image job. "The previous release" is the one production
+  # runs — the newest release tag HEAD contains (scripts/rollback-base.sh) —
+  # never the previous commit, which after a fast-forward is not a release.
   rollback:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -122,9 +123,18 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: python -m pytest tests/test_rollback.py
+      - name: the release a rollback returns to
+        run: echo "BLOCKTAIL_ROLLBACK_BASE=$(scripts/rollback-base.sh)" >> "$GITHUB_ENV"
+      - run: python -m pytest tests/test_rollback.py tests/test_rollback_base.py
         env:
-          BLOCKTAIL_ROLLBACK_BASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'HEAD^1' || 'origin/main' }}
+          BLOCKTAIL_ROLLBACK_REQUIRED: "1"
+      # v0.1.0 (c9a97aa, never tagged: deployed by hand) → v0.2.0, as it
+      # happened in production. Both ends are fixed, so this stays true.
+      - name: the historical transition v0.1.0 to v0.2.0
+        run: python -m pytest tests/test_rollback.py
+        env:
+          BLOCKTAIL_ROLLBACK_BASE: c9a97aa9e9a4a132fc020b5da4c2b467d43bc207
+          BLOCKTAIL_ROLLBACK_NEW: v0.2.0
           BLOCKTAIL_ROLLBACK_REQUIRED: "1"
 
   # The image as it ships. Two builds: one from the tracked files with secrets
@@ -136,8 +146,6 @@ jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      BLOCKTAIL_ROLLBACK_BASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && 'HEAD^1' || 'origin/main' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -149,6 +157,8 @@ jobs:
           docker build --platform linux/amd64 \
             --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" -t "$tag" .
           echo "RELEASE_IMAGE=$tag" >> "$GITHUB_ENV"
+      - name: the release a rollback returns to
+        run: echo "BLOCKTAIL_ROLLBACK_BASE=$(scripts/rollback-base.sh)" >> "$GITHUB_ENV"
       # A container that cannot start is a broken release, and the app validates
       # its whole configuration before it serves anything.
       - name: refuses to start without configuration
@@ -172,9 +182,10 @@ jobs:
       # fails, the rollback to the old image AND compose, and a damaged state.
       - name: deploys and rollbacks, scenarios A to J
         run: scripts/rollback-smoke.sh "$BLOCKTAIL_ROLLBACK_BASE"
-      # The server as the failed production attempt (RC2b.1) left it.
+      # A legacy server — deployed by hand, v0.1.0 (c9a97aa) — as the failed
+      # production attempt (RC2b.1) left it: HEAD's deploy must still adopt it.
       - name: deploy and rollback after the failed attempt
-        run: scripts/rollback-smoke.sh --after-failed-attempt "$BLOCKTAIL_ROLLBACK_BASE"
+        run: scripts/rollback-smoke.sh --after-failed-attempt c9a97aa9e9a4a132fc020b5da4c2b467d43bc207
       - name: the release artifact
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/rc/')
         run: scripts/release-image.sh "$RELEASE_IMAGE" release

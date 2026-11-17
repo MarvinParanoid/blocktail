@@ -15,16 +15,22 @@ synthetic database (tests/rollback_phases.py):
    wallet and asking for older history must work, with no SQLite error;
 4. this release again, on what the previous one wrote: rolling forward.
 
-The previous release is a git ref, BLOCKTAIL_ROLLBACK_BASE (CI: origin/main,
-which production runs until this is merged). Without it the test is skipped;
-the CI job that sets it sets BLOCKTAIL_ROLLBACK_REQUIRED=1, so there it fails
-instead of skipping when the ref is missing.
+The previous release is a git ref, BLOCKTAIL_ROLLBACK_BASE: in CI the release
+production runs, as scripts/rollback-base.sh names it (the newest release tag
+HEAD contains) — never "the previous commit". Without it the test is skipped;
+the CI job sets BLOCKTAIL_ROLLBACK_REQUIRED=1, so there a missing or unknown
+ref fails instead. When the base is the very commit under test (HEAD is the
+release) there is no rollback to check, and the test says so by skipping.
+
+BLOCKTAIL_ROLLBACK_NEW names the release under test when it is not HEAD — for
+a transition fixed in history, such as v0.1.0 (c9a97aa) → v0.2.0.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -36,26 +42,69 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 PHASES = ROOT / "tests" / "rollback_phases.py"
 BASE = os.environ.get("BLOCKTAIL_ROLLBACK_BASE", "")
+NEW = os.environ.get("BLOCKTAIL_ROLLBACK_NEW", "")
 REQUIRED = os.environ.get("BLOCKTAIL_ROLLBACK_REQUIRED") == "1"
 
 
-def _previous_release(tmp_path: Path) -> Path:
-    if not BASE:
-        if REQUIRED:
-            pytest.fail("BLOCKTAIL_ROLLBACK_REQUIRED=1 but BLOCKTAIL_ROLLBACK_BASE is not set")
-        pytest.skip("set BLOCKTAIL_ROLLBACK_BASE to the git ref production runs (origin/main)")
-    archive = subprocess.run(["git", "-C", str(ROOT), "archive", BASE],
+def _commit(ref: str) -> str | None:
+    done = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify", "--quiet",
+                           f"{ref}^{{commit}}"], capture_output=True, text=True, check=False)
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def _unpack(ref: str, target: Path) -> Path:
+    archive = subprocess.run(["git", "-C", str(ROOT), "archive", ref],
                              capture_output=True, check=False)
-    if archive.returncode != 0:
-        message = f"cannot read {BASE}: {archive.stderr.decode().strip()}"
-        if REQUIRED:
-            pytest.fail(message)
-        pytest.skip(message)
-    target = tmp_path / "previous"
+    assert archive.returncode == 0, archive.stderr.decode()
     target.mkdir()
     with tarfile.open(fileobj=BytesIO(archive.stdout)) as tar:
         tar.extractall(target, filter="data")
     return target
+
+
+def _releases(tmp_path: Path) -> tuple[Path, Path]:
+    """(the release rolled back to, the release under test)."""
+    if not BASE:
+        if REQUIRED:
+            pytest.fail("BLOCKTAIL_ROLLBACK_REQUIRED=1 but BLOCKTAIL_ROLLBACK_BASE is not set")
+        pytest.skip("set BLOCKTAIL_ROLLBACK_BASE to the release production runs"
+                    " (scripts/rollback-base.sh)")
+    base = _commit(BASE)
+    new = _commit(NEW or "HEAD")
+    if base is None or new is None:
+        message = f"cannot resolve {BASE if base is None else NEW}"
+        if REQUIRED:
+            pytest.fail(message)
+        pytest.skip(message)
+    if base == new:
+        pytest.skip(f"the base {BASE} is the release under test ({new[:12]}):"
+                    " there is no rollback to check")
+    previous = _unpack(base, tmp_path / "previous")
+    current = _unpack(new, tmp_path / "current") if NEW else ROOT
+    return previous, current
+
+
+# What the release under test does on purpose before the previous one comes
+# back: it asks for older history. Any version that knows that feature shows
+# the result — the index reaching further back, and the request's state in
+# /api/status — so those, and only those, may differ.
+def _expected_difference(path: str, before: str, after: str) -> bool:
+    if path.startswith("/api/"):
+        # The snapshots stand a placeholder for every time (<ts>, <age>…);
+        # bare ones are quoted so the body parses as JSON again.
+        quote = re.compile(r"(?<=[:\[,])<(\w+)>")
+        try:
+            old, new = (json.loads(quote.sub(r'"<\1>"', body)) for body in (before, after))
+        except ValueError:
+            return False
+        if isinstance(old, dict) and isinstance(new, dict):
+            old.pop("history", None)
+            new.pop("history", None)
+            return old == new
+        return False
+    old = [line for line in before.splitlines() if line not in after]
+    new = [line for line in after.splitlines() if line not in before]
+    return all("indexed back to block" in line for line in old + new)
 
 
 def _phase(root: Path, phase: str, work: Path) -> dict:
@@ -70,36 +119,33 @@ def _phase(root: Path, phase: str, work: Path) -> dict:
 
 
 def test_the_previous_release_runs_on_this_releases_database(tmp_path):
-    previous = _previous_release(tmp_path)
+    previous, current = _releases(tmp_path)
     work = tmp_path / "work"
     work.mkdir()
-    ours = sorted(int(p.name[:3]) for p in (ROOT / "app" / "migrations").glob("[0-9]*.sql"))
+    ours = sorted(int(p.name[:3]) for p in (current / "app" / "migrations").glob("[0-9]*.sql"))
 
     before = _phase(previous, "old1", work)
-    migrated = _phase(ROOT, "new", work)
+    migrated = _phase(current, "new", work)
     assert migrated["schema"]["versions"] == ours, migrated["schema"]["versions"]
     # A release without a migration is fine; then this shows only that the
     # previous release runs on its own schema after this one has used it.
     assert set(before["schema"]["versions"]) <= set(ours)
 
     back = _phase(previous, "old2", work)
-    # Reads answer as before. The one expected difference is the history floor
-    # ("indexed back to block #…"): this release went further back when asked,
-    # and the previous one shows where the index now reaches.
+    # Reads answer as before, except for what the release under test was
+    # asked to do (_expected_difference).
     snap6 = json.loads((work / "snap6.json").read_text())
     snap8 = json.loads((work / "snap8.json").read_text())
     assert back["reads_compared"] >= 20
     for path in back["reads_differing"]:
         assert snap6[path][0] == snap8[path][0], f"{path}: status changed"
-        old = [line for line in snap6[path][1].splitlines() if line not in snap8[path][1]]
-        new = [line for line in snap8[path][1].splitlines() if line not in snap6[path][1]]
-        unexpected = [line for line in old + new if "indexed back to block" not in line]
-        assert not unexpected, f"{path} differs after the migration: {unexpected[:5]}"
+        assert _expected_difference(path, snap6[path][1], snap8[path][1]), \
+            f"{path} differs after the migration:\n{snap6[path][1][:600]}\n---\n{snap8[path][1][:600]}"
     # Writes on the migrated file: a wallet added and renamed (its transfer
     # indexed), another removed.
     assert back["later_rows"] >= 1
     assert "Later renamed" in back["accounts"] and "Trading desk" not in back["accounts"]
     assert back["schema"]["versions"] == ours
 
-    forward = _phase(ROOT, "new2", work)
+    forward = _phase(current, "new2", work)
     assert "Later renamed" in forward["accounts"] and "Trading desk" not in forward["accounts"]

@@ -275,20 +275,37 @@ def test_ci_runs_the_checks_this_project_relies_on():
 
 
 def test_ci_rolls_back_to_what_production_runs():
-    """The previous release (main) on this one's database (tests/test_rollback.py,
-    required there, not skipped); its image after a real first deploy and a
-    rollback is in the image job (scripts/rollback-smoke.sh)."""
+    """The previous release is the release production runs, as
+    scripts/rollback-base.sh names it — never the previous commit (HEAD^1 on a
+    fast-forward of main was not a release, CI run 44039678433) and never a
+    branch that moves. Both jobs see the whole history and its tags, resolve
+    it before using it, and require it."""
+    raw = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+    for wrong in ("HEAD^1", "HEAD~1", "origin/main", "github.event.before"):
+        assert wrong not in raw, wrong
     jobs = WORKFLOWS["tests.yml"]["jobs"]
     for name in ("rollback", "image"):
-        checkout = [s for s in jobs[name]["steps"] if "actions/checkout" in s.get("uses", "")][0]
-        assert checkout["with"]["fetch-depth"] == 0, f"{name}: the previous release is in the history"
-    test = next(s for s in jobs["rollback"]["steps"] if "tests/test_rollback.py" in s.get("run", ""))
-    assert test["env"]["BLOCKTAIL_ROLLBACK_REQUIRED"] == "1"
-    assert test["env"]["BLOCKTAIL_ROLLBACK_BASE"]
+        steps = jobs[name]["steps"]
+        checkout = [s for s in steps if "actions/checkout" in s.get("uses", "")][0]
+        assert checkout["with"]["fetch-depth"] == 0, f"{name}: the release tags are in the history"
+        runs = [s.get("run", "") for s in steps]
+        resolve = next(i for i, r in enumerate(runs) if "scripts/rollback-base.sh" in r)
+        assert '>> "$GITHUB_ENV"' in runs[resolve]
+        uses = [i for i, r in enumerate(runs) if "test_rollback.py" in r or "rollback-smoke.sh" in r]
+        assert uses and resolve < min(uses), f"{name}: resolved before it is used"
+    current = next(s for s in jobs["rollback"]["steps"]
+                   if "tests/test_rollback.py" in s.get("run", "") and "NEW" not in str(s.get("env")))
+    assert current["env"]["BLOCKTAIL_ROLLBACK_REQUIRED"] == "1"
+    assert "BLOCKTAIL_ROLLBACK_BASE" not in current["env"], "from rollback-base.sh, not hard-coded"
+    historical = next(s for s in jobs["rollback"]["steps"]
+                      if "BLOCKTAIL_ROLLBACK_NEW" in (s.get("env") or {}))
+    assert historical["env"]["BLOCKTAIL_ROLLBACK_BASE"] == "c9a97aa9e9a4a132fc020b5da4c2b467d43bc207"
+    assert historical["env"]["BLOCKTAIL_ROLLBACK_NEW"] == "v0.2.0"
     smokes = [s.get("run", "") for s in jobs["image"]["steps"]
               if s.get("run", "").startswith("scripts/rollback-smoke.sh")]
-    assert any("--after-failed-attempt" not in r for r in smokes), "scenarios A to J"
-    assert any("--after-failed-attempt" in r for r in smokes), "the server as RC2b.1 left it"
+    assert 'scripts/rollback-smoke.sh "$BLOCKTAIL_ROLLBACK_BASE"' in smokes, "scenarios A to J"
+    assert "scripts/rollback-smoke.sh --after-failed-attempt c9a97aa9e9a4a132fc020b5da4c2b467d43bc207" \
+        in smokes, "a legacy server, as RC2b.1 left it"
 
 
 def test_ci_ships_the_image_it_checked():
