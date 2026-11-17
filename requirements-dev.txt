@@ -1,5 +1,5 @@
 -r requirements.txt
-pytest==9.1.1
+pytest==9.2.0
 # The same version the CI lint job runs. scripts/deploy.sh lints with it before
 # shipping, and tests/test_deploy.py exercises that.
 ruff==0.14.5
