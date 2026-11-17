@@ -24,6 +24,18 @@ TRANSFER_CALLS = 2 * WALLETS        # outgoing and incoming, per wallet, per cyc
 IDLE_CYCLE = {"eth_blockNumber": 1, "alchemy_getAssetTransfers": TRANSFER_CALLS}
 
 
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """FakeAlchemy answers through httpx.MockTransport; a socket connect here
+    would mean a request left the machine."""
+    import socket
+
+    def refuse(self, address):
+        raise AssertionError(f"a test tried to connect to {address}")
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+
+
 @pytest.fixture
 def lab(tmp_path):
     lab = Lab(tmp_path)

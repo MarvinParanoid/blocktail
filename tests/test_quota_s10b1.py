@@ -62,12 +62,36 @@ def until_full(lab: Lab, limit: int = 12) -> list[tuple[object, list[dict]]]:
     raise AssertionError("no full scan within the limit")
 
 
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Nothing here may reach a network: FakeAlchemy answers through
+    httpx.MockTransport, which opens no socket. Any connect fails the test."""
+    import socket
+
+    def refuse(self, address):
+        raise AssertionError(f"a test tried to connect to {address}")
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+
+
+def _ready(lab: Lab) -> Lab:
+    warm(lab)
+    until_full(lab, limit=40)    # start right after a full scan: the clock is known
+    lab.server.take()
+    return lab
+
+
 @pytest.fixture
 def lab(tmp_path):
-    lab = lab_with(tmp_path)
-    warm(lab)
-    until_full(lab)              # start right after a full scan: the clock is known
-    lab.server.take()
+    lab = _ready(lab_with(tmp_path))
+    yield lab
+    lab.close()
+
+
+@pytest.fixture(params=[8, 64], ids=["depth-8", "depth-64"])
+def deep_lab(tmp_path, request):
+    """The same, at REORG_DEPTH 8 and at production's 64."""
+    lab = _ready(lab_with(tmp_path, f"d{request.param}", reorg_depth=request.param))
     yield lab
     lab.close()
 
@@ -186,7 +210,8 @@ def test_6_a_transfer_the_balances_do_not_show_is_found_by_the_full_scan(tmp_pat
 # ----------------------------------------------------------------- 7: reorg
 
 
-def test_7_a_transfer_reorged_out_is_pruned_when_the_balance_reverts(lab):
+def test_7_a_transfer_reorged_out_is_pruned_when_the_balance_reverts(deep_lab):
+    lab = deep_lab
     w = lab.wallets[0]
     raw = lab.server.add_transfer(sender=address("stranger"), recipient=w, block=lab.server.head + 1)
     lab.cycle()
@@ -197,21 +222,25 @@ def test_7_a_transfer_reorged_out_is_pruned_when_the_balance_reverts(lab):
     assert raw["uniqueId"] not in stored_keys(lab)
 
 
-def test_7_a_transfer_appearing_in_an_already_scanned_block_is_found(lab):
+def test_7_a_transfer_appearing_in_an_already_scanned_block_is_found(deep_lab):
     """A reorg puts a transfer into a block the wallet was already scanned
     past: the next scan re-reads REORG_DEPTH blocks below its own watermark."""
+    lab = deep_lab
     w = lab.wallets[1]
     scanned_to = watermarks(lab)["W2"]
-    raw = lab.server.add_transfer(sender=address("stranger"), recipient=w, block=scanned_to - 10)
+    depth = lab.ctx.settings.reorg_depth
+    raw = lab.server.add_transfer(sender=address("stranger"), recipient=w,
+                                  block=scanned_to - min(10, depth - 1))
     result, _ = lab.cycle()
     assert result.scan == "changed"
     assert raw["uniqueId"] in stored_keys(lab)
 
 
-def test_7_a_reorg_the_balances_cannot_see_is_found_by_the_full_scan(lab):
+def test_7_a_reorg_the_balances_cannot_see_is_found_by_the_full_scan(deep_lab):
     """A transfer replaced by one of the same amount (a reorg reordering a
     block) leaves the balances as they were; the full scan, from each wallet's
     own watermark less REORG_DEPTH, corrects both."""
+    lab = deep_lab
     w = lab.wallets[2]
     old = lab.server.add_transfer(sender=address("stranger"), recipient=w, block=lab.server.head + 1)
     lab.cycle()
@@ -524,5 +553,122 @@ def test_a_wallet_left_unscanned_is_caught_up_from_its_own_watermark(tmp_path):
                 break
         assert result.scan == "full"
         assert {t["uniqueId"] for t in netted} <= stored_keys(lab)
+    finally:
+        lab.close()
+
+
+# ------------------------------------------------------------- RC edge cases
+
+
+def test_the_provider_rests_after_three_5xx_in_a_row_and_sends_nothing_meanwhile(lab):
+    """The circuit breaker: three server errors in a row and the provider is
+    not asked for 60 s — those requests are not sent, so not charged; the
+    first answer that is not a 5xx closes it."""
+    provider = lab.ctx.provider
+    lab.server.broken["eth_blockNumber"] = 503
+    with pytest.raises(Exception):
+        lab.run(provider.get_head_block())
+    sent = lab.server.take()
+    assert [r["status"] for r in sent] == [503, 503, 503]
+    for _ in range(5):
+        with pytest.raises(Exception, match="not sent"):
+            lab.run(provider.get_head_block())
+    assert lab.server.take() == [], "resting: nothing reaches the provider"
+    del lab.server.broken["eth_blockNumber"]
+    lab.clock.now += provider.REST_SECONDS
+    assert lab.run(provider.get_head_block()) == lab.server.head
+    assert [r["status"] for r in lab.server.take()] == [200]
+    assert provider._resting_until is None
+
+
+def test_a_balance_change_while_the_provider_rests_is_scanned_once_it_is_back(lab):
+    for method in ("eth_blockNumber", "eth_getBalance", "alchemy_getTokenBalances"):
+        lab.server.broken[method] = 503
+    raw = lab.server.add_transfer(sender=address("stranger"), recipient=lab.wallets[0],
+                                  block=lab.server.head + 1)
+    for _ in range(3):
+        result, _ = lab.cycle()
+        assert not result.ok
+    lab.server.broken.clear()
+    lab.next_wait = 90 + lab.ctx.provider.REST_SECONDS
+    for _ in range(3):
+        result, _ = lab.cycle()
+        if raw["uniqueId"] in stored_keys(lab):
+            break
+    assert result.ok and raw["uniqueId"] in stored_keys(lab)
+
+
+def test_more_than_64_blocks_pile_up_for_a_wallet_not_scanned_and_one_scan_covers_them(tmp_path):
+    """With full scans 30 min apart (~150 blocks) and REORG_DEPTH 64, a wallet
+    not scanned in between has a gap far wider than the reorg window; its
+    own watermark, not the window, is what the full scan starts from."""
+    lab = _ready(lab_with(tmp_path, full_scan_interval=1800))
+    try:
+        w = lab.wallets[3]
+        start = watermarks(lab)["W4"]
+        token = lab.server.holdings[w][0]
+        netted = [lab.server.add_transfer(sender=address("a"), recipient=w, block=lab.server.head + 1,
+                                          token=token, amount=10**18),
+                  lab.server.add_transfer(sender=w, recipient=address("b"), block=lab.server.head + 1,
+                                          token=token, amount=10**18)]
+        result, recs = until_full(lab, limit=25)[-1]
+        assert result.head_block - start > 64 + 64, "the gap is wider than the window"
+        transfers = [r for r in recs if r["method"] == "alchemy_getAssetTransfers" and r["wallet"] == "W4"]
+        assert len(transfers) == 2, "one request per side, whatever the range"
+        assert {t["uniqueId"] for t in netted} <= stored_keys(lab)
+    finally:
+        lab.close()
+
+
+def test_a_restart_after_a_scan_that_did_not_finish_scans_everything_again(lab):
+    before = watermarks(lab)
+    raws = [lab.server.add_transfer(sender=address("stranger"), recipient=w, block=lab.server.head + 1)
+            for w in lab.wallets[:2]]
+    lab.server.failures += [("alchemy_getAssetTransfers", 503, "W2 transfers-in")] * 3
+    result, _ = lab.cycle()
+    assert not result.ok and watermarks(lab) == before, "an unfinished scan moves nothing"
+    lab.start()                                       # the process dies and comes back
+    lab.next_wait = 90
+    result, recs = lab.cycle()
+    assert result.ok and result.scan == "full"
+    assert {r["uniqueId"] for r in raws} <= stored_keys(lab)
+    assert activity_rows(lab) == len(stored_keys(lab))
+
+
+def test_wallets_with_different_watermarks_each_resume_from_their_own(lab):
+    for _ in range(3):
+        lab.server.add_transfer(sender=address("stranger"), recipient=lab.wallets[0],
+                                block=lab.server.head + 1)
+        lab.cycle()
+    marks = watermarks(lab)
+    assert len(set(marks.values())) == 2, "W1 ahead, the rest where the last full scan left them"
+    result, recs = until_full(lab)[-1]
+    assert result.from_block == min(marks.values()) - 63
+    assert set(watermarks(lab).values()) == {result.head_block}
+
+
+def test_a_transfer_between_two_watched_wallets_is_scanned_on_both_and_stored_once(lab):
+    w1, w2 = lab.wallets[:2]
+    raw = lab.server.add_transfer(sender=w1, recipient=w2, block=lab.server.head + 1)
+    rows = activity_rows(lab)
+    result, recs = lab.cycle()
+    assert result.scan == "changed" and result.changed == 2 and result.scanned == 2
+    assert raw["uniqueId"] in stored_keys(lab)
+    assert activity_rows(lab) == rows + 1, "one event, not one per side"
+    until_full(lab)
+    assert activity_rows(lab) == rows + 1, "and the full scan does not add it again"
+
+
+def test_full_scan_interval_zero_is_the_original_algorithm(tmp_path):
+    """FULL_SCAN_INTERVAL_SECONDS=0: every cycle scans every wallet and reads
+    balances on the old timer — the request pattern S10a measured."""
+    lab = lab_with(tmp_path, "zero", full_scan_interval=0)
+    try:
+        warm(lab)
+        for _ in range(12):
+            result, recs = lab.cycle()
+            assert result.scan == "full"
+            assert by_method(recs)["alchemy_getAssetTransfers"] == FULL_TRANSFERS
+            assert by_method(recs)["eth_blockNumber"] == 1
     finally:
         lab.close()
