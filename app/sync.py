@@ -16,8 +16,18 @@ Design rules that matter here:
   A new one reaches back through the backfill window; one that was archived and
   re-added resumes from where it stopped, rather than replaying its history or
   silently skipping the gap.
+* **Two levels (S10b.1).** A transfer query is the expensive request (120
+  compute units, 96 % of the spend when every wallet was asked every cycle).
+  So each cycle reads every wallet's balances (40 CU) and scans transfers
+  only for a wallet whose balances changed — or whose last scan failed — and
+  for *every* wallet at least every ``full_scan_interval``, from each
+  wallet's own watermark. A balance is a reason to look sooner, never proof
+  that nothing happened: what nets out within an interval is found by the
+  full scan. A wallet not scanned keeps its watermark, so the next scan
+  covers everything since — one request whatever the range.
 * **No partial progress on failure — of indexing.** Transfers are fetched for
-  every wallet or the cycle records the error and leaves the watermark alone.
+  every wallet being scanned or the cycle records the error and leaves the
+  watermarks alone.
   Balances come after and fail on their own: indexed history is kept and its
   watermark advanced, and the wallets whose balances failed are read again
   next cycle.
@@ -27,7 +37,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from app.chains import Chain, ChainDataProvider
@@ -53,6 +65,10 @@ class CycleResult:
     error: str | None = None          # indexing failed; nothing advanced
     balance_error: str | None = None  # indexing succeeded; some balances did not
     backfill: bool = False
+    scan: str = "full"                # full | changed | none: which transfer scan ran
+    scanned: int = 0                  # wallets whose transfers were scanned
+    changed: int = 0                  # wallets whose balances moved since the last read
+    provider_failed: bool = False     # every balance read failed: back off as for an error
 
     @property
     def ok(self) -> bool:
@@ -94,6 +110,17 @@ class Indexer:
         # Wallets whose balances failed; read again next cycle whether or not
         # they moved. In memory only: a restart sweeps every wallet anyway.
         self._balances_pending: set[int] = set()
+        # Two-level sync. When every wallet was last scanned (None: not since
+        # this process started — so the first cycle always is a full scan,
+        # and a restart never trusts state it did not see). Wallets whose
+        # scan failed, scanned next cycle whatever their balances say.
+        self._full_scan_at: float | None = None
+        self._scan_pending: set[int] = set()
+        # Consecutive failed cycles: the wait before the next one grows.
+        self._failures = 0
+        # For the hourly quota line.
+        self._report_at: float | None = None
+        self._cycles = Counter()
 
     # --------------------------------------------------------------- loop
 
@@ -108,9 +135,11 @@ class Indexer:
             # Cleared before the cycle, so a wake that arrives during it is
             # not lost: it makes the next cycle start straight away.
             self._wake.clear()
+            delay = float(self.settings.sync_interval)
             try:
                 result = await self.run_once()
                 self._log(result)
+                delay = self.next_delay(result)
             except asyncio.CancelledError:
                 raise
             except Exception:  # a bug here must not kill the loop
@@ -118,10 +147,25 @@ class Indexer:
                 await asyncio.to_thread(
                     self.db.record_failure, self.chain_id, "internal error during sync"
                 )
-            await self._wait_for_work()
+            await self._wait_for_work(delay)
 
-    async def _wait_for_work(self) -> None:
-        """Sleep until the interval passes, someone wakes us, or we stop. No
+    # A provider that keeps failing is asked less and less often: every
+    # failed cycle doubles the wait, up to this, with jitter so a restart of
+    # several instances does not line them up. The first success resets it.
+    MAX_BACKOFF = 900.0
+
+    def next_delay(self, result: CycleResult) -> float:
+        """Seconds until the next cycle, given how this one ended."""
+        interval = float(self.settings.sync_interval)
+        if result.ok and not result.provider_failed:
+            self._failures = 0
+            return interval
+        self._failures += 1
+        backoff = min(self.MAX_BACKOFF, interval * 2 ** self._failures)
+        return backoff * (1 + random.random() * 0.2)
+
+    async def _wait_for_work(self, delay: float | None = None) -> None:
+        """Sleep until the delay passes, someone wakes us, or we stop. No
         cycle is running here, so nothing is held while waiting."""
         waiters = [
             asyncio.ensure_future(self._stop.wait()),
@@ -129,7 +173,7 @@ class Indexer:
         ]
         try:
             await asyncio.wait(
-                waiters, timeout=self.settings.sync_interval,
+                waiters, timeout=self.settings.sync_interval if delay is None else delay,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
@@ -141,12 +185,53 @@ class Indexer:
             log.error("sync %s failed: %s", self.chain_id, result.error)
             return
         log.info(
-            "sync %s: blocks %s-%s, %s fetched, %s new, %s pruned in %.1fs",
-            self.chain_id, result.from_block, result.head_block, result.fetched,
-            result.stored, result.pruned, result.duration,
+            "sync %s: head %s, scan %s (%s of %s wallets, %s changed), blocks %s-%s,"
+            " %s fetched, %s new, %s pruned in %.1fs",
+            self.chain_id, result.head_block, result.scan, result.scanned,
+            result.scanned + self._last_deferred, result.changed, result.from_block,
+            result.head_block, result.fetched, result.stored, result.pruned, result.duration,
         )
         if result.balance_error:
             log.warning("sync %s: %s", self.chain_id, result.balance_error)
+        self._report_quota()
+
+    _last_deferred = 0
+
+    def _report_quota(self) -> None:
+        """Once an hour: what was asked of the provider, by method, and its
+        estimated cost; how the cycles went; how far every wallet is synced.
+        Method names and counts only — no address, no URL."""
+        now = time.monotonic()
+        if self._report_at is None:
+            self._report_at = now
+            return
+        if now - self._report_at < 3600:
+            return
+        self._report_at = now
+        stats = getattr(self.provider, "stats", None)
+        if stats is None:
+            return
+        taken = stats.take()
+        requests = sum(taken.requests.values())
+        units = sum(taken.compute_units.values())
+        by_method = ", ".join(
+            f"{method} {count} (~{taken.compute_units.get(method, 0)} CU)"
+            for method, count in sorted(taken.requests.items(), key=lambda kv: -kv[1])
+        )
+        cycles = self._cycles
+        self._cycles = Counter()
+        full_ago = (
+            "never" if self._full_scan_at is None else f"{int(now - self._full_scan_at)}s ago"
+        )
+        log.info(
+            "quota %s, last hour: %s provider requests, ~%s CU (%s); retries %s, errors %s;"
+            " cycles: %s full scan, %s balance-change scan, %s no scan, %s failed;"
+            " %s wallet scans deferred; last full scan %s",
+            self.chain_id, requests, units, by_method or "none",
+            sum(taken.retries.values()), sum(taken.errors.values()),
+            cycles["full"], cycles["changed"], cycles["none"], cycles["failed"],
+            cycles["deferred"], full_ago,
+        )
 
     def wake(self) -> None:
         """Ask for a cycle soon. Never runs one: the scheduler does."""
@@ -253,41 +338,84 @@ class Indexer:
             result.duration = time.monotonic() - started
             return result
 
-        try:
-            transfers = await self._fetch_transfers(accounts, starts, head)
-        except Exception as exc:
-            return await failed(result, f"{type(exc).__name__}: {exc}")
+        # Which wallets are scanned for transfers this cycle, and why. A full
+        # scan is never put off by balance changes: its clock runs on its own.
+        now = time.monotonic()
+        full = self._full_scan_due(now) or reaching_back or result.backfill
+        balance_error: str | None = None
+        if full:
+            scan = accounts
+            result.scan = "full"
+        else:
+            changed, balance_error, every_read_failed = await self._probe_balances(accounts)
+            result.changed = len(changed)
+            result.provider_failed = every_read_failed
+            scan = [a for a in accounts if a.id in changed or a.id in self._scan_pending]
+            result.scan = "changed" if scan else "none"
+        result.scanned = len(scan)
+        self._last_deferred = len(accounts) - len(scan)
+        scan_starts = {account.id: starts[account.id] for account in scan}
 
-        result.fetched = len(transfers)
-        result.stored = await asyncio.to_thread(self.db.store_transfers, transfers)
-        result.pruned = await asyncio.to_thread(
-            self._prune, transfers, self._prune_windows(accounts, starts, head), head
-        )
-
-        # Indexing is done and complete: what was read is stored, and the
-        # watermark moves now — before balances, which can fail on their own
-        # without sending the next cycle back over the same blocks.
-        behind = [account for account in accounts if starts[account.id] < from_block]
-        if behind:
-            log.info(
-                "caught up %d account(s) from block %s",
-                len(behind),
-                min(starts[account.id] for account in behind),
+        transfers: list[Transfer] = []
+        if scan:
+            try:
+                transfers = await self._fetch_transfers(scan, starts, head)
+            except Exception as exc:
+                # Nothing is advanced; these wallets are scanned next cycle,
+                # and a full scan that failed is still due.
+                self._scan_pending.update(scan_starts)
+                self._cycles["failed"] += 1
+                return await failed(result, f"{type(exc).__name__}: {exc}")
+            result.from_block = min(scan_starts.values())
+            result.fetched = len(transfers)
+            result.stored = await asyncio.to_thread(self.db.store_transfers, transfers)
+            result.pruned = await asyncio.to_thread(
+                self._prune, transfers, self._prune_windows(scan, starts, head), head
             )
-        await asyncio.to_thread(self.db.mark_synced, starts, head)
+            # Indexing is done and complete for these wallets: what was read is
+            # stored, and their watermarks move now — before balances, which
+            # can fail on their own without sending the next cycle back.
+            behind = [account for account in scan if starts[account.id] < from_block]
+            if behind:
+                log.info(
+                    "caught up %d account(s) from block %s",
+                    len(behind),
+                    min(starts[account.id] for account in behind),
+                )
+            await asyncio.to_thread(self.db.mark_synced, scan_starts, head)
+            self._scan_pending.difference_update(scan_starts)
+        else:
+            result.from_block = head
+        if full:
+            self._full_scan_at = now
+
+        # The chain is synced through the lowest watermark: a wallet not
+        # scanned this cycle is still synced only to where it was.
+        synced_through = min(
+            head if account.id in scan_starts else (account.synced_to_block or head)
+            for account in accounts
+        )
         await asyncio.to_thread(
-            self.db.record_success, self.chain_id, last_synced_block=head, head_block=head
+            self.db.record_success, self.chain_id,
+            last_synced_block=synced_through, head_block=head,
         )
         if reaching_back:
             await asyncio.to_thread(self.db.history_finished, self.chain_id)
 
-        updated, balance_error = await self._refresh_balances(
-            self._needs_balances(accounts, transfers, forced=result.backfill)
-        )
-        result.balances_updated = updated
-        result.balance_error = balance_error
-        if updated or balance_error:
+        if full:
+            updated, balance_error = await self._refresh_balances(
+                self._needs_balances(accounts, transfers, forced=result.backfill)
+            )
+            result.balances_updated = updated
+            if updated or balance_error:
+                await asyncio.to_thread(self.db.record_balances, self.chain_id, balance_error)
+        else:
+            # Every wallet's balances were just read; record when, or why not.
+            result.balances_updated = result.changed
             await asyncio.to_thread(self.db.record_balances, self.chain_id, balance_error)
+        result.balance_error = balance_error
+        self._cycles[result.scan] += 1
+        self._cycles["deferred"] += len(accounts) - len(scan)
 
         result.prices_updated = await self._refresh_prices()
         result.duration = time.monotonic() - started
@@ -468,6 +596,80 @@ class Indexer:
             if account.address in moved or account.id in self._balances_pending
         ]
 
+    def _full_scan_due(self, now: float) -> bool:
+        """Every wallet's transfers are scanned at least every
+        full_scan_interval: due one tick early, so the gap between two full
+        scans never exceeds it. An interval not above the tick (or 0) means
+        every cycle — the original algorithm."""
+        interval = self.settings.full_scan_interval
+        tick = self.settings.sync_interval
+        if interval <= tick or self._full_scan_at is None:
+            return True
+        return now - self._full_scan_at >= interval - tick
+
+    async def _read_balances(self, account: Account) -> list[Balance]:
+        native_asset = AssetRef(
+            chain_id=self.chain_id,
+            contract_address=NATIVE,
+            symbol=self.chain.native_symbol,
+            decimals=self.chain.native_decimals,
+        )
+        native, tokens = await asyncio.gather(
+            self.provider.get_native_balance(account.address),
+            self.provider.get_token_balances(account.address),
+        )
+        balances = [Balance(asset=native_asset, amount_raw=native)]
+        balances.extend(
+            token
+            for token in tokens
+            if token.amount_raw > 0
+            and (self.chain_id, token.asset.contract_address) not in self.config.ignore_assets
+        )
+        return balances
+
+    async def _probe_balances(
+        self, accounts: list[Account]
+    ) -> tuple[set[int], str | None, bool]:
+        """Read every wallet's balances and compare them with the stored ones.
+
+        A wallet whose balances moved is stored and returned, to be scanned
+        now. One that did not is not proof of anything — what came in and went
+        out within the interval nets to the same balances — which is why the
+        full scan runs whatever this says. A failed read is reported and the
+        wallet is left to the full scan: asking a struggling provider for its
+        most expensive query because it could not answer a cheap one helps no
+        one. Returns (moved, error, every read failed)."""
+        stored = await asyncio.to_thread(self.db.balances_by_account)
+        outcomes = await asyncio.gather(
+            *(self._read_balances(account) for account in accounts), return_exceptions=True
+        )
+        moved: set[int] = set()
+        failures: list[str] = []
+        for account, outcome in zip(accounts, outcomes, strict=True):
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome
+            if isinstance(outcome, BaseException):
+                self._balances_pending.add(account.id)
+                failures.append(f"{account.name}: {type(outcome).__name__}: {outcome}")
+                continue
+            before = {
+                (row["contract_address"], int(row["amount_raw"]))
+                for row in stored.get(account.id, [])
+            }
+            after = {(balance.asset.contract_address, balance.amount_raw) for balance in outcome}
+            if before != after:
+                await asyncio.to_thread(self.db.replace_balances, account.id, outcome)
+                moved.add(account.id)
+            self._balances_pending.discard(account.id)
+        if not failures:
+            self._balances_at = time.monotonic()
+            return moved, None, False
+        error = (
+            f"balances not read for {len(failures)} of {len(accounts)} wallet(s): "
+            + "; ".join(failures)
+        )
+        return moved, error, len(failures) == len(accounts)
+
     async def _refresh_balances(self, accounts: list[Account]) -> tuple[int, str | None]:
         """Re-read balances, one wallet at a time as far as failure goes.
 
@@ -478,29 +680,8 @@ class Indexer:
         if not accounts:
             return 0, None
 
-        native_asset = AssetRef(
-            chain_id=self.chain_id,
-            contract_address=NATIVE,
-            symbol=self.chain.native_symbol,
-            decimals=self.chain.native_decimals,
-        )
-
-        async def for_account(account: Account) -> list[Balance]:
-            native, tokens = await asyncio.gather(
-                self.provider.get_native_balance(account.address),
-                self.provider.get_token_balances(account.address),
-            )
-            balances = [Balance(asset=native_asset, amount_raw=native)]
-            balances.extend(
-                token
-                for token in tokens
-                if token.amount_raw > 0
-                and (self.chain_id, token.asset.contract_address) not in self.config.ignore_assets
-            )
-            return balances
-
         outcomes = await asyncio.gather(
-            *(for_account(a) for a in accounts), return_exceptions=True
+            *(self._read_balances(a) for a in accounts), return_exceptions=True
         )
         updated, failures = 0, []
         for account, outcome in zip(accounts, outcomes, strict=True):

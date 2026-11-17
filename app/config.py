@@ -80,6 +80,14 @@ class Settings:
     # is ever written back into a page or a redirect, but only a list stops a
     # DNS-rebinding site from reading an instance that has no auth.
     allowed_hosts: tuple[str, ...] = ()
+    # Two-level sync (S10b.1, docs/audit/alchemy-quota-s10b1.md): every cycle
+    # reads each wallet's balances; transfers are scanned for a wallet whose
+    # balances changed, and for every wallet at least this often. 0, or not
+    # above sync_interval: every cycle, as before.
+    full_scan_interval: int = 900
+    # Provider requests are paced by their compute-unit cost, under the free
+    # plan's 300 CU/s. 0: not paced.
+    provider_cu_per_second: int = 250
 
     @property
     def auth_enabled(self) -> bool:
@@ -149,6 +157,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         stale_after=_env_int(env, "STALE_AFTER_SECONDS", max(180, interval * 3), minimum=30),
         price_refresh=_env_int(env, "PRICE_REFRESH_SECONDS", 300, minimum=30),
         balance_refresh=_env_int(env, "BALANCE_REFRESH_SECONDS", 600, minimum=0),
+        # A wallet whose balances did not move is scanned for transfers this
+        # often (and sooner when they do): the guarantee that nothing a
+        # balance cannot show — in and out within one interval — is missed.
+        full_scan_interval=_env_int(env, "FULL_SCAN_INTERVAL_SECONDS", 900, minimum=0),
+        provider_cu_per_second=_env_int(env, "PROVIDER_CU_PER_SECOND", 250, minimum=0),
         # A scam token can have a nominal DEX quote and an absurd supply, which
         # is enough to swallow a portfolio total whole. 0 disables the guard.
         value_max_share=min(1.0, _env_int(env, "VALUE_MAX_SHARE_PERCENT", 90, minimum=0) / 100),

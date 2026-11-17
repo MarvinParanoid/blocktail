@@ -183,6 +183,8 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         stale_after=180,
         price_refresh=300,
         balance_refresh=0,  # sweep every cycle; the policy has its own tests
+        full_scan_interval=0,  # scan every cycle; the two-level policy has its own tests
+        provider_cu_per_second=0,  # not paced; the pacing has its own tests
         prices_enabled=True,
         value_max_share=0.9,
         dust_below_usd=Decimal("1"),

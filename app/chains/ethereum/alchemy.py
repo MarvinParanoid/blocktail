@@ -31,6 +31,51 @@ _CATEGORIES = ["external", "internal", "erc20"]
 _RETRY_STATUS = frozenset({403, 408, 425, 429, 500, 502, 503, 504})
 _THROTTLED = frozenset({403, 429})
 
+# What Alchemy charges per request, in compute units: the request is charged,
+# not the blocks or results in it; 429 and 403 cost nothing, any other error
+# the method's price. https://www.alchemy.com/docs/reference/compute-unit-costs,
+# read 2026-11-17. Used to pace requests and to estimate spend in the log.
+COMPUTE_UNITS = {
+    "eth_blockNumber": 10,
+    "eth_getBalance": 20,
+    "eth_getTransactionReceipt": 20,
+    "eth_getTransactionByHash": 20,
+    "alchemy_getAssetTransfers": 120,
+    "alchemy_getTokenBalances": 20,
+    "alchemy_getTokenMetadata": 10,
+}
+
+
+class ProviderStats:
+    """Requests sent, by method: how many, how many failed or were retries,
+    and the compute units they are estimated to have cost. No addresses, no
+    URLs: method names and numbers only."""
+
+    def __init__(self) -> None:
+        self.requests: dict[str, int] = {}
+        self.compute_units: dict[str, int] = {}
+        self.errors: dict[str, int] = {}
+        self.retries: dict[str, int] = {}
+
+    def count(self, method: str, *, status: int | None, attempt: int) -> None:
+        self.requests[method] = self.requests.get(method, 0) + 1
+        if attempt > 0:
+            self.retries[method] = self.retries.get(method, 0) + 1
+        if status != 200:
+            self.errors[method] = self.errors.get(method, 0) + 1
+        # Throttled (429/403) and never-delivered (0: connection, timeout) cost nothing.
+        charged = 0 if status in _THROTTLED or not status else COMPUTE_UNITS.get(method, 0)
+        self.compute_units[method] = self.compute_units.get(method, 0) + charged
+
+    def take(self) -> ProviderStats:
+        """The counts so far, and start again."""
+        taken = ProviderStats()
+        taken.requests, self.requests = self.requests, {}
+        taken.compute_units, self.compute_units = self.compute_units, {}
+        taken.errors, self.errors = self.errors, {}
+        taken.retries, self.retries = self.retries, {}
+        return taken
+
 
 class ProviderError(RuntimeError):
     """The upstream chain data provider could not satisfy a request."""
@@ -77,13 +122,26 @@ class AlchemyProvider:
         *,
         timeout: float = 30.0,
         max_retries: int = 5,
+        max_server_attempts: int = 3,
         max_concurrency: int = 2,
+        compute_units_per_second: int = 0,
         max_token_lookups: int = 200,
         metadata_retry_seconds: float = 300.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._url = url
         self._max_retries = max_retries
+        # A provider answering 5xx is not helped by being asked five times at
+        # full price (a 5xx is charged; a 429 or 403 is not): fewer attempts.
+        self._max_server_attempts = min(max_server_attempts, max_retries)
+        self._cu_per_second = compute_units_per_second
+        self._next_slot: float | None = None
+        # A provider that answers 5xx to everything is not asked again for a
+        # while: 5xx are charged, and several queries in flight would each
+        # spend their attempts on it. Any answer that is not a 5xx closes it.
+        self._server_streak = 0
+        self._resting_until: float | None = None
+        self.stats = ProviderStats()
         self._max_token_lookups = max_token_lookups
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout)
@@ -105,16 +163,53 @@ class AlchemyProvider:
 
     # ------------------------------------------------------------------ rpc
 
+    async def _pace(self, method: str) -> None:
+        """Space requests by what they cost: at most compute_units_per_second
+        on average, so a burst (fourteen transfer queries, a backfill's pages)
+        stays under the plan's throughput instead of meeting 429s."""
+        if self._cu_per_second <= 0:
+            return
+        now = time.monotonic()
+        slot = now if self._next_slot is None else max(now, self._next_slot)
+        self._next_slot = slot + COMPUTE_UNITS.get(method, 10) / self._cu_per_second
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
+    REST_AFTER = 3          # server errors in a row, across all requests
+    REST_SECONDS = 60.0
+
+    def _note_server(self, failed: bool) -> None:
+        if not failed:
+            self._server_streak = 0
+            self._resting_until = None
+            return
+        self._server_streak += 1
+        if self._server_streak >= self.REST_AFTER:
+            self._resting_until = time.monotonic() + self.REST_SECONDS
+
     async def _rpc(self, method: str, params: list) -> object:
         self._request_id += 1
         payload = {"jsonrpc": "2.0", "id": self._request_id, "method": method, "params": params}
         delay = 0.5
         last_error = "no attempt made"
+        server_errors = 0
 
         for attempt in range(self._max_retries):
+            status: int | None = None
+            if self._resting_until is not None and time.monotonic() < self._resting_until:
+                # Not sent, not charged: the provider has just failed every request.
+                raise ProviderError(
+                    f"{method} not sent: the provider answered {self._server_streak} requests"
+                    f" in a row with server errors; asking again in"
+                    f" {self._resting_until - time.monotonic():.0f}s (last: {last_error})"
+                )
             try:
+                await self._pace(method)
                 async with self._semaphore:
                     response = await self._client.post(self._url, json=payload)
+                status = response.status_code
+                self.stats.count(method, status=status, attempt=attempt)
+                self._note_server(status >= 500 or status in (408, 425))
                 if is_access_denied(response):
                     # Asking again changes nothing and spends the time a
                     # throttled caller would back off for.
@@ -129,6 +224,10 @@ class AlchemyProvider:
                         # Backing off by the usual step just walks into the same
                         # ceiling; a throttled caller has to actually wait.
                         delay = max(delay, 2.0)
+                    else:
+                        server_errors += 1
+                        if server_errors >= self._max_server_attempts:
+                            break
                 else:
                     response.raise_for_status()
                     body = response.json()
@@ -140,7 +239,13 @@ class AlchemyProvider:
             except ProviderError:
                 raise
             except (httpx.HTTPError, ValueError) as exc:
+                if status is None:          # never reached the provider: not charged
+                    self.stats.count(method, status=0, attempt=attempt)
+                    self._note_server(True)
                 _, last_error = describe_failure(exc)
+                server_errors += 1
+                if server_errors >= self._max_server_attempts:
+                    break
 
             if attempt < self._max_retries - 1:
                 # Jitter, so several stalled requests do not all resume together
@@ -148,7 +253,7 @@ class AlchemyProvider:
                 await asyncio.sleep(delay * (1 + random.random() * 0.4))
                 delay *= 2
 
-        raise ProviderError(f"{method} failed after {self._max_retries} attempts: {last_error}")
+        raise ProviderError(f"{method} failed after {attempt + 1} attempts: {last_error}")
 
     # -------------------------------------------------------------- queries
 

@@ -110,7 +110,7 @@ def d_token_received(*, decimals_in_transfer: bool = True) -> dict:
         def add(lab):
             sent = token if decimals_in_transfer else Holding(token.contract, token.symbol, None)
             lab.server.add_transfer(sender=address("stranger"), recipient=w1,
-                                    block=lab.server.head + 3, token=sent)
+                                    block=lab.server.head + 3, token=sent, move_balances=False)
             lab.server.holdings[w1] = [*lab.server.holdings[w1], token]
         base, event = _event_cycle(lab, add)
         _, after = lab.cycle()
@@ -172,7 +172,9 @@ def g_throttled() -> dict:
         result, recs = lab.cycle()
         throttled = {"ok": result.ok, "cycle": _summary(recs),
                      "backoff_seconds": lab.clock.slept[slept_before:]}
-        lab.server.failures += [("alchemy_getAssetTransfers", 503, "W1 transfers-out")] * 5
+        # As many 503s as the provider tries a 5xx (3 since S10b.1): this call fails.
+        attempts = lab.ctx.provider._max_server_attempts
+        lab.server.failures += [("alchemy_getAssetTransfers", 503, "W1 transfers-out")] * attempts
         watermark = lab.ctx.db.get_sync_status(lab.ctx.chain.chain_id).last_synced_block
         result, recs = lab.cycle()
         failing = {"ok": result.ok, "error": result.error, "cycle": _summary(recs),

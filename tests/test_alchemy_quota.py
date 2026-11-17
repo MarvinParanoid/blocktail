@@ -131,7 +131,7 @@ def test_a_transient_error_is_retried_once_and_charged():
 
 def test_throttling_is_free_but_a_failing_provider_costs_more_than_a_quiet_hour():
     """Hypotheses 7 and 10: 429 costs 0 CU and waits ≥2 s; a call that fails
-    every attempt is tried 5 times, the cycle fails without moving the
+    every attempt is tried 3 times (5 before S10b.1), the cycle fails without moving the
     watermark, and the next cycle repeats the whole scan — a bounded loop
     (one per interval) that spends more than an idle cycle for no progress."""
     out = s.g_throttled()
@@ -140,7 +140,8 @@ def test_throttling_is_free_but_a_failing_provider_costs_more_than_a_quiet_hour(
     assert all(wait >= 2.0 for wait in throttled["backoff_seconds"])
     failing = out["failing"]
     assert not failing["ok"] and not failing["watermark_moved"]
-    assert failing["attempts_on_failing_call"] == 5
+    # S10b.1: a 5xx is charged, so it is tried 3 times, not 5 (429/403: still 5).
+    assert failing["attempts_on_failing_call"] == 3
     assert failing["cycle"]["cu"] > 1690
     assert out["next"]["methods"]["alchemy_getAssetTransfers"] == TRANSFER_CALLS
 

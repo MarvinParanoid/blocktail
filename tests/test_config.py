@@ -242,3 +242,15 @@ def test_an_unreadable_config_explains_itself(tmp_path: Path):
 
     assert "chmod 644" in str(info.value)
     assert "unprivileged" in str(info.value)
+
+
+def test_the_two_level_sync_and_pacing_default_on_and_can_be_turned_off():
+    """S10b.1: a full transfer scan at least every 900 s, requests paced under
+    the free plan's 300 CU/s; 0 restores scanning every wallet every cycle
+    and unpaced requests."""
+    settings = load_settings({"ALCHEMY_API_KEY": "secret"})
+    assert settings.full_scan_interval == 900
+    assert settings.provider_cu_per_second == 250
+    off = load_settings({"ALCHEMY_API_KEY": "secret", "FULL_SCAN_INTERVAL_SECONDS": "0",
+                         "PROVIDER_CU_PER_SECOND": "0"})
+    assert off.full_scan_interval == 0 and off.provider_cu_per_second == 0

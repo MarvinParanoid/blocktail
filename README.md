@@ -219,7 +219,9 @@ was already indexed; removing one keeps its history and simply stops showing it.
 | `BLOCKTAIL_DB` | `data/blocktail.db` | SQLite path. |
 | `SYNC_INTERVAL_SECONDS` | `90` | How often to look for new activity. |
 | `BACKFILL_DAYS` | `90` | How far back the feed reaches. |
-| `REORG_DEPTH` | `64` | Blocks re-scanned each cycle to correct reorgs. |
+| `REORG_DEPTH` | `64` | Blocks re-scanned below each wallet's watermark to correct reorgs. |
+| `FULL_SCAN_INTERVAL_SECONDS` | `900` | Every wallet's transfers are scanned at least this often; between, only a wallet whose balances moved. `0`: every cycle. |
+| `PROVIDER_CU_PER_SECOND` | `250` | Provider requests are paced by their compute-unit cost (free plan: 300/s). `0`: not paced. |
 | `AUTH_USER` / `AUTH_PASSWORD` | *(unset)* | Require HTTP basic auth when both are set. |
 | `ALLOWED_HOSTS` | *(any)*; **required by docker-compose.yml** | Comma-separated names this instance is served as; any other Host gets 400. Loopback only for the container's own healthcheck. |
 | `MAX_TOKEN_BALANCES` | `10` | Token balances shown per wallet. |
@@ -239,30 +241,43 @@ was already indexed; removing one keeps its history and simply stops showing it.
 
 ## Provider usage and the free tier
 
-Each cycle costs two `alchemy_getAssetTransfers` calls per wallet (one per
-direction — the API ANDs `fromAddress` and `toAddress`, so they cannot be
-combined) plus a balance and a token-balance call:
+A query for a wallet's transfers is the expensive request: 120 compute units,
+two per wallet (one per direction — the API ANDs `fromAddress` and
+`toAddress`), the same price whatever range of blocks it covers. So each
+cycle reads every wallet's balances instead (`eth_getBalance` and
+`alchemy_getTokenBalances`, 40 CU together) and asks for transfers only for a
+wallet whose balances moved; every wallet's transfers are scanned at least
+every `FULL_SCAN_INTERVAL_SECONDS` regardless, from its own watermark — a
+balance is a reason to look sooner, never proof that nothing happened (what
+comes in and goes out within one interval nets to the same balances). See
+[docs/audit/alchemy-quota-s10b1.md](docs/audit/alchemy-quota-s10b1.md).
 
 ```
-monthly CU  ≈  wallets × 275 × (2,592,000 / SYNC_INTERVAL_SECONDS)
+daily CU  ≈  N × (10 + 40 × wallets)  +  F × 200 × wallets  +  prices
+             N = 86,400 / SYNC_INTERVAL_SECONDS
+             F = 86,400 / (FULL_SCAN_INTERVAL_SECONDS − SYNC_INTERVAL_SECONDS)
+             prices ≈ 19,200 at the defaults (two Prices API calls, 40 CU each,
+                      per PRICE_REFRESH_SECONDS)
 ```
 
-Valuation adds two Prices API calls per `PRICE_REFRESH_SECONDS` regardless of
-how many wallets you watch, which is negligible next to the figures below.
+Approximate monthly compute units at the defaults (90 s, a full scan every
+900 s), beside every wallet scanned every cycle (`FULL_SCAN_INTERVAL_SECONDS=0`,
+as before S10b.1):
 
-Approximate monthly compute units:
+| Wallets | two-level | every cycle |
+| --- | --- | --- |
+| 3 | 6.2 M | 22.1 M |
+| 5 | 9.8 M | 36.3 M |
+| **7** | **13.4 M** | **50.5 M** |
+| 10 | 18.8 M | 71.7 M |
 
-| Wallets | 30 s | 60 s | **90 s** | 300 s |
-| --- | --- | --- | --- | --- |
-| 3 | 71 M | 36 M | **24 M** | 7 M |
-| 5 | 119 M | 59 M | **40 M** | 12 M |
-| 10 | 238 M | 119 M | **79 M** | 24 M |
-
-The 90-second default keeps three or four wallets inside a 30 M/month free
-allowance. With more wallets, raise the interval or expect to pay — at
-pay-as-you-go rates the overage is cents per month rather than dollars. Check
-your provider's current tier before lowering the interval; the figure above was
-correct at the time of writing but is not something this app can verify.
+Costs are Alchemy's per-request compute units
+(alchemy.com/docs/reference/compute-unit-costs, read 2026-11-17); the free
+plan is 30 M a month. A provider that fails every request is asked less and
+less often (cycles back off to 15 minutes, and after three server errors in a
+row it is not asked at all for a minute), so an outage costs a few thousand CU
+an hour, not more than a quiet hour. The log carries an hourly line of what
+was asked, by method, and its estimated cost.
 
 Both the backfill and the re-scan window are bounded, so cost does not grow with
 the size of your history.

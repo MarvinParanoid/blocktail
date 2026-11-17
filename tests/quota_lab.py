@@ -68,7 +68,10 @@ CU_SOURCE = "alchemy.com/docs/reference/compute-unit-costs and alchemy.com/prici
 # What production runs with (/root/blocktail-build/.env, read 2026-11-17; the
 # rest are the defaults in app/config.py).
 PRODUCTION = dict(sync_interval=90, backfill_days=90, reorg_depth=64,
-                  price_refresh=300, balance_refresh=600)
+                  price_refresh=300, balance_refresh=600, full_scan_interval=0)
+# S10b.1: the same, with the two-level sync on (FULL_SCAN_INTERVAL_SECONDS).
+# PRODUCTION above stays what S10a audited: every wallet scanned every cycle.
+TWO_LEVEL = {**PRODUCTION, "full_scan_interval": 900}
 WALLETS = 7
 BLOCK_SECONDS = 12
 
@@ -93,6 +96,7 @@ class Clock:
 
     async def sleep(self, seconds: float, *args) -> None:
         self.slept.append(seconds)       # the back-off a retry would wait
+        self.now += max(0.0, seconds)    # virtual time passes; the real loop does not wait
         await _real_sleep(0)
 
 
@@ -148,11 +152,14 @@ class FakeAlchemy:
     head: int = 21_000_000
     transfers: list[dict] = field(default_factory=list)
     holdings: dict[str, list[Holding]] = field(default_factory=dict)
+    ether: dict[str, int] = field(default_factory=dict)     # address -> wei; 1 ETH if unset
     page_size: int | None = None                  # None: maxCount, as Alchemy honours it
     # (method, status) or (method, status, "W1 transfers-out"): each used once,
     # by the next request of that method — or of that wallet and reason.
     failures: list[tuple] = field(default_factory=list)
     records: list[dict] = field(default_factory=list)
+    broken: dict[str, int] = field(default_factory=dict)    # method -> status, every time
+    clock: object | None = None                             # stamps each request when set
     _attempts: Counter = field(default_factory=Counter)
 
     # -- recording
@@ -162,9 +169,12 @@ class FakeAlchemy:
         self.records.append({
             "method": method, "reason": reason, "wallet": wallet, "status": status,
             "ok": status == 200, "attempt": self._attempts[key],
+            "t": self.clock.now if self.clock is not None else None,
         })
 
     def _fail(self, method: str, target: str | None = None) -> int | None:
+        if method in self.broken:
+            return self.broken[method]
         for i, failure in enumerate(self.failures):
             wanted, status, only = (*failure, None)[:3]
             if wanted == method and (only is None or only == target):
@@ -216,7 +226,7 @@ class FakeAlchemy:
         if method == "eth_blockNumber":
             return hex(self.head)
         if method == "eth_getBalance":
-            return hex(10**18)
+            return hex(self.ether.get(params[0], 10**18))
         if method == "alchemy_getTokenBalances":
             who, _, options = params
             held = self.holdings.get(who, [])
@@ -273,12 +283,14 @@ class FakeAlchemy:
     # -- events
 
     def add_transfer(self, *, sender: str, recipient: str, block: int, token: Holding | None = None,
-                     amount: int = 10**17, seed: str | None = None) -> None:
+                     amount: int = 10**17, seed: str | None = None, category: str | None = None,
+                     move_balances: bool = True) -> dict:
+        """A transfer on chain; by default it moves the balances it would move."""
         seed = seed or f"t{len(self.transfers)}"
         raw: dict = {
             "uniqueId": f"{tx_hash(seed)}:{'log:0' if token else 'external'}",
             "hash": tx_hash(seed), "blockNum": hex(block),
-            "category": "erc20" if token else "external",
+            "category": category or ("erc20" if token else "external"),
             "from": sender, "to": recipient,
             "asset": token.symbol if token else "ETH",
             "rawContract": {"value": hex(amount),
@@ -289,6 +301,44 @@ class FakeAlchemy:
                 1_700_000_000 + block * BLOCK_SECONDS, timezone.utc).isoformat()},
         }
         self.transfers.append(raw)
+        if move_balances:
+            self._move(sender, recipient, token, amount)
+        return raw
+
+    def remove_transfer(self, raw: dict, *, move_balances: bool = True) -> None:
+        """A reorg took it out of the chain."""
+        self.transfers.remove(raw)
+        if move_balances:
+            token = None
+            if raw["category"] == "erc20":
+                token = self._holding(raw["rawContract"]["address"], raw["asset"])
+            self._move(raw["to"], raw["from"], token, int(raw["rawContract"]["value"], 16))
+
+    def _holding(self, contract: str, symbol: str) -> Holding:
+        for held in self.holdings.values():
+            for h in held:
+                if h.contract == contract:
+                    return h
+        return Holding(contract, symbol, 18, 0)
+
+    def _move(self, sender: str, recipient: str, token: Holding | None, amount: int) -> None:
+        if token is None:
+            if sender in self.wallets:
+                self.ether[sender] = self.ether.get(sender, 10**18) - amount
+            if recipient in self.wallets:
+                self.ether[recipient] = self.ether.get(recipient, 10**18) + amount
+            return
+        for who, sign in ((sender, -1), (recipient, 1)):
+            if who not in self.wallets:
+                continue
+            held = self.holdings.setdefault(who, [])
+            mine = next((h for h in held if h.contract == token.contract), None)
+            if mine is None:
+                mine = Holding(token.contract, token.symbol, token.decimals, 0)
+                held.append(mine)
+            mine.amount += sign * amount
+            if mine.amount <= 0:
+                held.remove(mine)
 
 
 # --------------------------------------------------------------- the lab
@@ -309,7 +359,9 @@ def synthetic_holdings(wallets: list[str], per_wallet=(6, 7, 7, 2, 3, 1, 1)) -> 
     out = {}
     offset = 0
     for w, count in zip(wallets, per_wallet, strict=False):
-        out[w] = [pool[(offset + k) % TOKEN_POOL] for k in range(count)]
+        # The same contracts, each wallet its own amount.
+        out[w] = [Holding(h.contract, h.symbol, h.decimals, h.amount)
+                  for h in (pool[(offset + k) % TOKEN_POOL] for k in range(count))]
         offset += count
     return out
 
@@ -326,6 +378,7 @@ class Lab:
             holdings=synthetic_holdings(self.wallets))
         self.params = {**PRODUCTION, **(settings or {})}
         self.clock = Clock()
+        self.server.clock = self.clock
         self.undo = install_clock(self.clock)
         # One loop for the lab's life: the provider's semaphore and client
         # outlive a cycle, as they do in the running application.
@@ -342,11 +395,13 @@ class Lab:
                                  backfill_days=self.params["backfill_days"],
                                  reorg_depth=self.params["reorg_depth"],
                                  price_refresh=self.params["price_refresh"],
+                                 full_scan_interval=self.params["full_scan_interval"],
                                  max_token_lookups=200)
         config = make_config(wallets=[{"name": f"W{i + 1}", "address": w}
                                       for i, w in enumerate(self.wallets)])
         client = httpx.AsyncClient(transport=self.server.transport())
-        provider = AlchemyProvider(settings.alchemy_url, client=client, max_concurrency=2)
+        provider = AlchemyProvider(settings.alchemy_url, client=client, max_concurrency=2,
+                                   compute_units_per_second=self.params.get("cu_per_second", 0))
         prices = AlchemyPrices("LAB", base_url="https://api.g.alchemy.com/prices/v1", client=client)
         if self.ctx is not None:
             self.ctx.db.close()
@@ -355,11 +410,17 @@ class Lab:
         self.ctx.db.apply_watch_config(config)
         self.ctx.db.relink_accounts()
 
+    next_wait: float | None = None
+
     def cycle(self, *, blocks: int | None = None) -> tuple[object, list[dict]]:
-        """One scheduler tick: the interval passes, the chain moves on, a cycle runs."""
-        self.clock.now += self.params["sync_interval"]
-        self.server.head += (self.params["sync_interval"] // BLOCK_SECONDS) if blocks is None else blocks
+        """One scheduler tick: the wait the indexer asked for passes (the
+        interval, or a back-off after failures), the chain moves on as far as
+        that time allows, a cycle runs."""
+        wait = self.params["sync_interval"] if self.next_wait is None else self.next_wait
+        self.clock.now += wait
+        self.server.head += int(wait // BLOCK_SECONDS) if blocks is None else blocks
         result = self.run(self.ctx.indexer.run_once())
+        self.next_wait = self.ctx.indexer.next_delay(result)
         return result, self.server.take()
 
     def run(self, coroutine):

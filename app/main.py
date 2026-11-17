@@ -81,6 +81,7 @@ def build_context(
             settings.alchemy_url,
             max_token_lookups=settings.max_token_lookups,
             max_concurrency=settings.provider_concurrency,
+            compute_units_per_second=settings.provider_cu_per_second,
         )
 
     if price_source is None and settings.prices_available:
